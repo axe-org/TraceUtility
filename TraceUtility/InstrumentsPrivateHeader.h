@@ -275,6 +275,8 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 - (UInt64)slot;
 - (UInt64)data;
 - (XRRawBacktrace *)backtrace;
+- (int)refCountDelta;
+- (NSString *)categoryNameOrDescription;
 @end
 
 @interface XRObjectAllocEventViewController : NSObject {
@@ -287,6 +289,174 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 }
 - (NSArray<XRContext *> *)_topLevelContexts;
 @end
+
+@interface XROAEventSummary : NSObject <NSCoding, NSCopying>
+{
+    @public
+    long long totalBytes;
+    long long activeBytes;
+    int totalAllocationCount;
+    int activeAllocationCount;
+    int totalEvents;
+    int livingCount;
+    int transitoryCount;
+    int categoryIdentifier;
+    long long livingBytes;
+    long long transitoryBytes;
+    NSString *categoryName;
+}
+
++ (void)initialize;
+- (unsigned int)categoryIdentifier;
+- (id)category;
+- (void)add:(id)arg1;
+- (void)clear;
+- (BOOL)isEqual:(id)arg1;
+- (id)copyWithZone:(struct _NSZone *)arg1;
+- (id)initWithCoder:(id)arg1;
+- (void)encodeWithCoder:(id)arg1;
+- (id)description;
+- (void)dealloc;
+- (id)initWithCategory:(id)arg1 identifier:(unsigned int)arg2;
+
+@end
+
+
+@class DVT_VMUClassInfo, NSData, NSString;
+
+@interface XRLeak : NSObject <NSCoding>
+{
+    unsigned long long _discoveryTimestamp;
+    NSData *_content;
+    unsigned long long _remoteAddress;
+    unsigned long long _remoteIsa;
+    unsigned int _remoteSize;
+    BOOL _isRoot;
+    BOOL _inCycle;
+    unsigned long long _allocationTimestamp;
+    unsigned int _allocationIdentifier;
+//    id <CommonRawStack> _backtrace;
+    unsigned int _reachableSize;
+    unsigned int _reachableCount;
+    DVT_VMUClassInfo *_layout;
+    unsigned int _classInfoIndex;
+}
+
++ (void)initialize;
+@property unsigned int classInfoIndex; // @synthesize classInfoIndex=_classInfoIndex;
+@property(retain) DVT_VMUClassInfo *classInfo; // @synthesize classInfo=_layout;
+@property(nonatomic) BOOL inCycle; // @synthesize inCycle=_inCycle;
+@property(nonatomic) BOOL isRootLeak; // @synthesize isRootLeak=_isRoot;
+@property(nonatomic) unsigned int reachableCount; // @synthesize reachableCount=_reachableCount;
+@property(nonatomic) unsigned int reachableSize; // @synthesize reachableSize=_reachableSize;
+@property(copy, nonatomic) NSData *content; // @synthesize content=_content;
+@property(nonatomic) unsigned long long allocationTimestamp; // @synthesize allocationTimestamp=_allocationTimestamp;
+@property(nonatomic) unsigned int allocationIdentifier; // @synthesize allocationIdentifier=_allocationIdentifier;
+@property(readonly) unsigned long long discoveryTimestamp; // @synthesize discoveryTimestamp=_discoveryTimestamp;
+@property(readonly) unsigned long long remoteIsa; // @synthesize remoteIsa=_remoteIsa;
+@property(readonly) unsigned int size; // @synthesize size=_remoteSize;
+@property(readonly) unsigned long long address; // @synthesize address=_remoteAddress;
+@property(readonly) NSString *name;
+@property(readonly) unsigned int count;
+@property(readonly) NSString *displayAddress;
+@property(readonly) NSString *className;
+- (unsigned long long)timestamp;
+- (BOOL)isEqual:(id)arg1;
+- (id)copyWithZone:(struct _NSZone *)arg1;
+- (id)initWithCoder:(id)arg1;
+- (void)encodeWithCoder:(id)arg1;
+- (id)initWithAddress:(unsigned long long)arg1 size:(unsigned int)arg2 classInfoIndex:(unsigned int)arg3 classInfo:(id)arg4 discoveryTimestamp:(unsigned long long)arg5;
+
+@end
+
+// 可以通过获取内存，查找到指定的 XRRun 以分析数据。
+@interface XRLeaksRun : XRRun
+{
+    XRBacktraceRepository *_repository;
+    NSMutableArray *_allLeaks;
+    NSMutableArray *_cyclicLeaks;
+//    CDStruct_fc8fca5f _allReferences;
+//    DVT_VMUClassInfoMap *_knownLayouts;
+    NSMutableArray *_leakSnapshotInfo;
+    unsigned long long _firstLeakTime;
+//    XRObjectAllocRunSharedData *_oaData;
+    BOOL _backtracesAvailable;
+    BOOL _referencesAvailable;
+    NSMapTable *_btAggregatedLeaks;
+    NSString *_status;
+    struct __CFDictionary *_addressToLeak;
+    unsigned long long _latestTimestamp;
+    NSArray *_filterTokens;
+    BOOL _filterOr;
+//    struct XRTimeRange _activeTimeRange;
+//    NSMutableArray *_failedLookups;
+//    XRLeaksReceiver *_dataReceiver;
+    int _pid;
+    unsigned int _options;
+    BOOL _autoLeaksEnabled;
+    unsigned long long _autoLeaksInterval;
+    unsigned long long _autoLeaksTriggerTime;
+    NSObject<OS_dispatch_source> *_timerSource;
+    NSObject<OS_dispatch_queue> *_workerQueue;
+    unsigned long long _legacyStartTime;
+}
+
++ (void)initialize;
+@property(readonly) unsigned long long firstLeakTime; // @synthesize firstLeakTime=_firstLeakTime;
+@property(readonly) NSArray *leakSnapshotInfo; // @synthesize leakSnapshotInfo=_leakSnapshotInfo;
+@property(readonly) BOOL backtracesAvailable; // @synthesize backtracesAvailable=_backtracesAvailable;
+@property(readonly) BOOL referencesAvailable; // @synthesize referencesAvailable=_referencesAvailable;
+@property(readonly) NSArray *allLeaks; // @synthesize allLeaks=_allLeaks;
+@property(readonly) unsigned long long latestTimestamp; // @synthesize latestTimestamp=_latestTimestamp;
+@property(nonatomic) unsigned long long autoLeaksInterval; // @synthesize autoLeaksInterval=_autoLeaksInterval;
+@property(nonatomic) BOOL autoLeaksEnabled; // @synthesize autoLeaksEnabled=_autoLeaksEnabled;
+@property(readonly, copy) NSString *statusString; // @synthesize statusString=_status;
+//- (void).cxx_destruct;
+//- (id)operation:(id)arg1 commentsForSymbol:(id)arg2 inSourceManager:(id)arg3 callTreeInformation:(id)arg4;
+//- (void)filterWithTokens:(id)arg1 matchesAny:(BOOL)arg2;
+//- (void)setSelectedTimeRange:(struct XRTimeRange)arg1;
+//- (CDUnknownBlockType)_activeFilter;
+- (id)backtracesForCategory:(id)arg1 timeRange:(struct XRTimeRange)arg2 savedIndex:(unsigned long long *)arg3;
+- (id)backtraceRepository;
+- (id)backtraceForLeak:(id)arg1;
+- (void)stopWithReceiverError:(id)arg1;
+- (id)eventHistoryForPointer:(unsigned long long)arg1;
+- (id)inverseReferencesForLeak:(id)arg1;
+- (id)referencesForLeak:(id)arg1;
+- (id)infoForIsa:(unsigned long long)arg1;
+//- (void)_enumerateLeakReferences:(id)arg1 inverse:(BOOL)arg2 withBlock:(CDUnknownBlockType)arg3;
+//- (id)leakReferenceFromInfo:(CDStruct_0a4d7299)arg1;
+- (id)leakWithAddress:(unsigned long long)arg1;
+@property(readonly) NSArray *cyclicLeaks;
+@property(readonly) NSArray *rootLeaks;
+@property(readonly) NSArray *aggregatedLeaks;
+//@property(readonly) XRMetadataTagTable *pairingTable;
+@property(readonly) BOOL historiesAvailable;
+- (void)_updateStatusString;
+//- (void)_handleNewLeaks:(CDStruct_cbbc06c7 *)arg1 ofCount:(unsigned int)arg2 withContents:(id *)arg3 references:(CDStruct_fc8fca5f)arg4 layouts:(id)arg5 timestamp:(unsigned long long)arg6;
+- (void)_aggregateLeakByBacktrace:(id)arg1;
+- (void)_assignBacktracesToLeaks:(id)arg1 time:(unsigned long long)arg2;
+- (void)stopRecording;
+- (void)requestLeaksCheck;
+- (BOOL)recordWithDevice:(id)arg1 pid:(int)arg2 objectAllocInstrument:(id)arg3;
+- (void)_armTimer;
+@property(nonatomic) BOOL recordLeakContents;
+- (id)initWithCoder:(id)arg1;
+- (void)encodeWithCoder:(id)arg1;
+- (void)dealloc;
+- (id)init;
+- (void)_commonLeaksRunSetup;
+
+// Remaining properties
+@property(readonly, copy) NSString *debugDescription;
+@property(readonly, copy) NSString *description;
+@property(readonly) unsigned long long hash;
+@property(readonly) Class superclass;
+
+@end
+
+
+
 
 //@interface XRVideoCardRun : XRRun {
 //    NSArrayController *_controller;

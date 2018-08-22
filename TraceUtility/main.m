@@ -9,14 +9,21 @@
 #import "InstrumentsPrivateHeader.h"
 #import <objc/runtime.h>
 
-#define TUPrint(format, ...) CFShow((__bridge CFStringRef)[NSString stringWithFormat:format, ## __VA_ARGS__])
+static void TUPrint(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    printf("%s",[message UTF8String]);
+}
+
 #define TUIvarCast(object, name, type) (*(type *)(void *)&((char *)(__bridge void *)object)[ivar_getOffset(class_getInstanceVariable(object_getClass(object), #name))])
 #define TUIvar(object, name) TUIvarCast(object, name, id const)
 
 // Workaround to fix search paths for Instruments plugins and packages.
 static NSBundle *(*NSBundle_mainBundle_original)(id self, SEL _cmd);
 static NSBundle *NSBundle_mainBundle_replaced(id self, SEL _cmd) {
-    return [NSBundle bundleWithPath:@"/Applications/Xcode.app/Contents/Applications/Instruments.app"];
+    return [NSBundle bundleWithPath:@"/Applications/Xcode-beta.app/Contents/Applications/Instruments.app"];
 }
 
 static void __attribute__((constructor)) hook() {
@@ -37,7 +44,6 @@ int main(int argc, const char * argv[]) {
         // Instruments has its own subclass of NSDocumentController without overriding sharedDocumentController method.
         // We have to call this eagerly to make sure the correct document controller is initialized.
         [PFTDocumentController sharedDocumentController];
-
         // Open a trace document.
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
         if (arguments.count < 2) {
@@ -45,6 +51,8 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
         NSString *tracePath = arguments[1];
+        NSString *targetLibraryName = @"Test";
+        
         NSError *error = nil;
         PFTTraceDocument *document = [[PFTTraceDocument alloc]initWithContentsOfURL:[NSURL fileURLWithPath:tracePath] ofType:@"com.apple.instruments.trace" error:&error];
         if (error) {
@@ -61,6 +69,7 @@ int main(int argc, const char * argv[]) {
 
         // Each trace document consists of data from several different instruments.
         XRTrace *trace = document.trace;
+        
         for (XRInstrument *instrument in trace.allInstrumentsList.allInstruments) {
             TUPrint(@"\nInstrument: %@ (%@)\n", instrument.type.name, instrument.type.uuid);
 
@@ -111,9 +120,16 @@ int main(int argc, const char * argv[]) {
                         return nodes;
                     };
                     NSMutableArray<PFTCallTreeNode *> *nodes = flattenTree(backtraceRepository.rootNode);
-                    [nodes sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:NSStringFromSelector(@selector(terminals)) ascending:NO]]];
+                    // no need to sort.
+                    //                    [nodes sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:NSStringFromSelector(@selector(count)) ascending:NO]]];
                     for (PFTCallTreeNode *node in nodes) {
-                        TUPrint(@"%@ %@ %i ms\n", node.libraryName, node.symbolName, node.terminals);
+                        // if has targetLibrary argument , to filter symbol to only show the target library.
+                        if ([node.libraryName isEqualToString:targetLibraryName]) {
+                            NSArray *symbolNamePath = [node symbolNamePath];
+                            if (symbolNamePath.count > 2) {
+                                TUPrint(@"%@,%@,%@\n",symbolNamePath[1] , node.symbolName, @(node.count));
+                            }
+                        }
                     }
                 } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.oa"]) {
                     // Allocations: print out the memory allocated during each second in descending order of the size.
@@ -134,8 +150,35 @@ int main(int argc, const char * argv[]) {
                     byteFormatter.countStyle = NSByteCountFormatterCountStyleBinary;
                     for (NSNumber *time in sortedTime) {
                         NSString *size = [byteFormatter stringForObjectValue:sizeGroupedByTime[time]];
-                        TUPrint(@"%@ %@\n", time, size);
+                        TUPrint(@"%@,%@\n", time, size);
                     }
+                    
+                    // 我们再添加一个当前持久数据的分析，以支持之后的内存泄漏的检测。
+                    // 4 contexts: Statistics, Call Trees, Allocations List, Generations.
+                    [allocInstrument._topLevelContexts[0] display];
+//                    id displayDataSourcee = TUIvar(allocInstrument, _displayDataSource);
+                    NSArray<XROAEventSummary *> *objects = TUIvar(TUIvar(allocInstrument, _summaryController),_objects);
+                    for (XROAEventSummary *summary in objects) {
+                        NSString *categoryName = TUIvar(summary,categoryName);
+                        NSNumber *totalBytes = [summary valueForKeyPath:@"totalBytes"];
+                        NSNumber *totalAllocationCount = [summary valueForKeyPath:@"totalAllocationCount"];
+                        NSNumber *livingBytes = [summary valueForKeyPath:@"livingBytes"];
+                        NSNumber *livingCount = [summary valueForKeyPath:@"livingCount"];
+                        TUPrint(@"%@,%@,%@,%@,%@\n",categoryName,totalBytes,totalAllocationCount, livingBytes, livingCount);
+                    }
+                } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.homeleaks"]) {
+                    // 内存泄漏检测。 但是不准，还要结合上面的 持久数据分析。 以当前10.0版本的instruemnts 来说， 我们设置 timer的循环引用，无法被检测出来。
+                    // 可以通过断点，查找内存元素来快速发现数据路径。
+                    XRLeaksRun *run = [instrument valueForKeyPath:@"_run"];
+                    NSArray<XRLeak *> *allLeaks = [run valueForKeyPath:@"_allLeaks"];
+                    for (XRLeak *leak in allLeaks) {
+                        // 打印泄漏，需要过滤
+                        NSString *binaryImageName = [[leak valueForKeyPath:@"_layout._remoteBinaryPath"] lastPathComponent];
+                        if ([binaryImageName isEqualToString:targetLibraryName]) {
+                            TUPrint(@"%@,%@,%@,%@\n",leak.className,@(leak.count),@(leak.size),binaryImageName);
+                        }
+                    }
+                    
                 } else if ([instrumentID isEqualToString:@"com.apple.dt.coreanimation-fps"]) {
                     // Core Animation FPS: print out all FPS data samples.
                     // 2 contexts: Measurements, Statistics

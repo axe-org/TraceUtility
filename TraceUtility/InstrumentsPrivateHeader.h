@@ -180,6 +180,14 @@ XRContext *XRContextFromDetailNode(XRAnalysisCoreDetailViewController *detailCon
 
 @interface XRBacktraceRepository : NSObject
 - (PFTCallTreeNode *)rootNode;
+- (id)libraryForAddress:(unsigned long long)arg1;
+- (id)symbolForPC:(unsigned long long)arg1;
+@end
+
+@interface PFTOwnerData : NSObject
+- (id)libraryPath;
+- (id)libraryName;
+
 @end
 
 @interface XRMultiProcessBacktraceRepository : XRBacktraceRepository
@@ -208,6 +216,17 @@ XRStoredValue XRAnalysisCoreReadCursorGetStored(XRAnalysisCoreReadCursor *cursor
 BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 column, XRAnalysisCoreValue * __strong *pointer);
 
 @interface XREngineeringTypeFormatter : NSFormatter
+@end
+
+@interface XRTraceEngineeringTypeFormatter : XREngineeringTypeFormatter
+- (id)stringForCoreProfileBacktraceEngineeringValue:(id)arg1;
+- (id)stringForTextSymbolEngineeringValue:(id)arg1;
+- (id)stringForBacktraceEngineeringValue:(id)arg1;
+- (id)stringForUserIDEngineeringValue:(id)arg1;
+- (id)stringForThreadEngineeringValue:(id)arg1;
+- (id)stringForInstrumentTypeEngineeringValue:(id)arg1;
+- (id)stringForProcessEngineeringValue:(id)arg1;
+- (id)stringForSocketAddrEngineeringValue:(id)arg1;
 @end
 
 @interface XRAnalysisCoreFullTextSearchSpec : NSObject
@@ -253,7 +272,39 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 - (NSArray<XRContext *> *)_permittedContexts;
 @end
 
-@interface XRRawBacktrace : NSObject
+@interface XRRawBacktrace : NSObject <NSSecureCoding>
+{
+    unsigned long long *_frames;
+    unsigned int _count;
+    int _pid;
+    unsigned long long _hash;
+    unsigned int _flags;
+}
+
++ (BOOL)supportsSecureCoding;
++ (void)initialize;
+- (BOOL)backtraceIsEqual:(id)arg1;
+- (unsigned long long)backtraceHash;
+- (BOOL)bottomIsTruncated;
+- (void)setBottomIsTruncated:(BOOL)arg1;
+- (BOOL)topIsTruncated;
+- (void)setTopIsTruncated:(BOOL)arg1;
+- (int)pid;
+- (long long)kernelFrameCount;
+- (long long)count;
+- (unsigned long long *)frames;
+- (id)initWithCoder:(id)arg1;
+- (void)encodeWithCoder:(id)arg1;
+- (void)setFrames:(unsigned long long *)arg1 count:(unsigned int)arg2;
+- (void)dealloc;
+- (id)initWithFrames:(unsigned long long *)arg1 count:(long long)arg2 pid:(int)arg3;
+
+// Remaining properties
+@property(readonly, copy) NSString *debugDescription;
+@property(readonly, copy) NSString *description;
+@property(readonly) unsigned long long hash;
+@property(readonly) Class superclass;
+
 @end
 
 @interface XRManagedEvent : NSObject
@@ -322,7 +373,10 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 @end
 
 
+
 @class DVT_VMUClassInfo, NSData, NSString;
+
+
 
 @interface XRLeak : NSObject <NSCoding>
 {
@@ -343,6 +397,7 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 }
 
 + (void)initialize;
+@property(nonatomic) XRRawBacktrace *backtrace;
 @property unsigned int classInfoIndex; // @synthesize classInfoIndex=_classInfoIndex;
 @property(retain) DVT_VMUClassInfo *classInfo; // @synthesize classInfo=_layout;
 @property(nonatomic) BOOL inCycle; // @synthesize inCycle=_inCycle;

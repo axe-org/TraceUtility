@@ -35,6 +35,8 @@ typedef struct { XRTime start, length; } XRTimeRange;
 - (SInt64)runNumber;
 - (NSString *)displayName;
 - (XRTimeRange)timeRange;
+- (double)startTime;
+- (double)endTime;
 @end
 
 @interface PFTInstrumentType : NSObject
@@ -156,33 +158,119 @@ XRContext *XRContextFromDetailNode(XRAnalysisCoreDetailViewController *detailCon
 @interface XRAnalysisCoreProjectionViewController : NSViewController <XRSearchTarget>
 @end
 
-@interface PFTCallTreeNode : NSObject
+@interface PFTCallTreeNode : NSObject{
+@public
+    unsigned long long parentalAddress;
+    struct {
+        double selfWeight;
+        double weight;
+    } weights[1];
+}
++ (id)newNodeWithWeightCount:(unsigned long long)arg1 name:(id)arg2;
++ (id)newNodeWithWeightCount:(unsigned long long)arg1;
++ (id)allocWithWeightCount:(unsigned long long)arg1;
++ (void)initialize;
+- (id)initWithCoder:(id)arg1;
+- (void)encodeWithCoder:(id)arg1;
+- (long long)lineNumberForDisplay;
+- (id)pathForDisplay;
+- (id)symbolNameForUse;
+- (BOOL)getWeight:(double *)arg1 at:(unsigned long long)arg2;
+- (id)symbolNameForDisplay;
+- (id)libraryForDisplay;
+- (id)libraryPath;
 - (NSString *)libraryName;
-- (NSString *)symbolName;
-- (UInt64)address;
-- (NSArray *)symbolNamePath; // Call stack
-- (instancetype)root;
-- (instancetype)parent;
-- (NSArray *)children;
-- (SInt32)numberChildren;
-- (SInt32)terminals; // An integer value of this node, such as self running time in millisecond.
-- (SInt32)count; // Total value of all nodes of the subtree whose root node is this node. It means that if you increase terminals by a value, count will also be increased by the same value, and that the value of count is calculated automatically and you connot modify it.
-- (UInt64)weightCount; // Count of different kinds of double values;
-- (Float64)selfWeight:(UInt64)index; // A double value similar to terminal at the specific index.
-- (Float64)weight:(UInt64)index; // A double value similar to count at the specific index. The difference is that you decide how weigh should be calculated.
-- (Float64)selfCountPercent; // self.terminal / root.count
-- (Float64)totalCountPercent; // self.count / root.count
-- (Float64)parentCountPercent; // parent.count / root.count
-- (Float64)selfWeightPercent:(UInt64)index; // self.selfWeight / root.weight
-- (Float64)totalWeightPercent:(UInt64)index; // self.weight / root.weight
-- (Float64)parentWeightPercent:(UInt64)index; // parent.weight / root.weight
+- (unsigned long long)lineNumber;
+- (id)sourcePath;
+- (unsigned long long)address;
+- (BOOL)recursivelyTrimLibraries:(id)arg1 keepBoundaries:(BOOL)arg2;
+- (BOOL)recursivelyTrimSymbols:(id)arg1 prune:(BOOL)arg2;
+- (void)recursivelyPruneLeavingLibraryNames:(id)arg1 requireAny:(BOOL)arg2;
+- (void)recursivelyPruneLeavingSymbolNames:(id)arg1 requireAny:(BOOL)arg2;
+- (void)recursivePruneByWeightWithMin:(long long)arg1 max:(long long)arg2;
+- (void)recursivePruneByCountWithMin:(unsigned int)arg1 max:(unsigned int)arg2;
+- (void)mergeWithNode:(id)arg1 factor:(int)arg2;
+- (void)flattenAllRecursion;
+- (void)pruneChild:(id)arg1;
+- (void)flattenChild:(id)arg1;
+- (BOOL)recursiveFlattenWithDataSelector:(SEL)arg1 filterNonZero:(BOOL)arg2;
+- (BOOL)recursiveFlattenWithPredicate:(id)arg1;
+- (id)_heaviestInvolvingNodeWithStyle:(int)arg1;
+- (id)heaviestInvolvingNodeAsCounts;
+- (id)heaviestInvolvingNodeAsWeights;
+- (id)heaviestInvolvingNodeAsBytes;
+- (id)heaviestInvolvingNode;
+- (double)selfCountPercent;
+- (double)totalCountPercent;
+- (double)parentCountPercent;
+- (double)selfWeightPercent:(unsigned long long)arg1;
+- (double)totalWeightPercent:(unsigned long long)arg1;
+- (double)parentWeightPercent:(unsigned long long)arg1;
+- (id)symbolData;
+- (id)_symbolData;
+- (id)data;
+- (id)symbol;
+- (void)setName:(id)arg1;
+- (id)symbolName;
+- (void)setShowAsCounts:(id)arg1;
+- (void)setShowAsBytes:(id)arg1;
+- (id)totalBytes;
+- (id)selfBytes;
+- (int)terminals;
+- (int)count;
+- (double)selfWeight:(unsigned long long)arg1;
+- (double)weight:(unsigned long long)arg1;
+- (unsigned long long)weightCount;
+- (int)pid;
+- (int)numberChildren;
+- (id)children;
+- (id)uidSet;
+- (id)childWithSymbolName:(id)arg1;
+- (id)childWithUid:(id)arg1;
+- (id)symbolNamePath;
+- (id)uidPath;
+- (id)uid;
+- (PFTCallTreeNode *)parent;
+- (id)root;
+- (id)_gatherSamples;
+- (void)_recursiveGatherSamples:(id)arg1;
+- (id)_assembleLineSpecificData;
+- (void)_recursiveAssembleLineSpecificData:(id)arg1 baseSymbolData:(id)arg2;
+- (void)setRoot:(id)arg1;
+- (void)adopt:(id)arg1 merge:(BOOL)arg2 compare:(BOOL)arg3;
+- (unsigned int)_thread;
+- (void)fixupCounts;
+- (id)getConcreteParent;
+- (void)setDoNotRecalcWeightFlag;
+- (void)setTopFunctionsFlag;
+- (void)setIsTopOfStackFlag;
+- (void)setPrivateDataFlag;
+- (void)setIsInvertedFlag;
+- (void)addTerminals:(int)arg1;
+- (void)addSelfWeight:(double)arg1 forIndex:(unsigned long long)arg2;
+- (void)addWeight:(double)arg1 forIndex:(unsigned long long)arg2;
+- (id)addNewChildWithData:(id)arg1;
+- (id)childThatMatchesNode:(id)arg1;
+@property(readonly, copy) NSString *description;
+- (id)representedObject;
 @end
-
 @interface XRBacktraceRepository : NSObject
 - (PFTCallTreeNode *)rootNode;
+- (void)refreshTreeRoot;
+@property(nonatomic) BOOL trimSystemLibraries;
 - (id)libraryForAddress:(unsigned long long)arg1;
 - (id)symbolForPC:(unsigned long long)arg1;
 @end
+
+@interface XRObjectAllocRun : XRRun
+- (void)setLifecycleFilter:(int)arg1;
+@end
+
+@interface XRCallTreeDetailView : NSTableView
+- (void)forceReloadDetailData;
+- (void)setValue:(id)arg1 forUndefinedKey:(id)arg2;
+@end
+
 
 @interface PFTOwnerData : NSObject
 - (id)libraryPath;
@@ -270,6 +358,7 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 
 @interface XRLegacyInstrument : XRInstrument <XRInstrumentViewController, XRContextContainer>
 - (NSArray<XRContext *> *)_permittedContexts;
+- (id)viewForContext:(id)arg1;
 @end
 
 @interface XRRawBacktrace : NSObject <NSSecureCoding>
@@ -330,16 +419,31 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 - (NSString *)categoryNameOrDescription;
 @end
 
+@interface PFTTableDetailView : NSTableView
+- (void)_copyWithHeader:(BOOL)arg1;
++ (id)_stringForRows:(id)arg1 inView:(id)arg2 delimiter:(unsigned short)arg3 header:(BOOL)arg4;
+@end
+
 @interface XRObjectAllocEventViewController : NSObject {
+    @public
     XRManagedEventArrayController *_ac;
+    PFTTableDetailView *_view;
 }
 @end
 
 @interface XRObjectAllocInstrument : XRLegacyInstrument {
+@public
     XRObjectAllocEventViewController *_objectListController;
+    NSMutableDictionary *_configurationOptions;
 }
 - (NSArray<XRContext *> *)_topLevelContexts;
+- (BOOL)refreshDataSources;
+@property(nonatomic) BOOL discardLifecycleComplete;
+- (void)setNeedsForceReloadData:(BOOL)need;
+- (void)_refreshFilterPredicate;
+- (void)updateCurrentDetailView:(BOOL)arg1;
 @end
+
 
 @interface XROAEventSummary : NSObject <NSCoding, NSCopying>
 {

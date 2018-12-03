@@ -84,10 +84,14 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
 
 #pragma mark - export data from instruments
 void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts) {
-    FILE *fp = NULL;
+    // timeProfile 输出两份数据，一个是全部，一个是过滤系统库调用，只留有APP相关的调用。
+    FILE *allFp = NULL;
+    FILE *filterFP = NULL;
     if (outputPath) {
         NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"timeprofiler.txt"];
-        fp = fopen(timeProfileFile.UTF8String, "w+");
+        allFp = fopen(timeProfileFile.UTF8String, "w+");
+        timeProfileFile = [outputPath stringByAppendingPathComponent:@"timeprofiler-filtered.txt"];
+        filterFP = fopen(timeProfileFile.UTF8String, "w+");
     }
     // Time Profiler: print out all functions in descending order of self execution time.
     // 3 contexts: Profile, Narrative, Samples
@@ -95,26 +99,37 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts) {
     [context display];
     XRAnalysisCoreCallTreeViewController *controller = TUIvar(context.container, _callTreeViewController);
     XRBacktraceRepository *backtraceRepository = TUIvar(controller, _backtraceRepository);
-    static NSMutableArray<PFTCallTreeNode *> * (^ const flattenTree)(PFTCallTreeNode *) = ^(PFTCallTreeNode *rootNode) { // Helper function to collect all tree nodes.
-        NSMutableArray *nodes = [NSMutableArray array];
-        if (rootNode) {
-            [nodes addObject:rootNode];
-            for (PFTCallTreeNode *node in rootNode.children) {
-                [nodes addObjectsFromArray:flattenTree(node)];
+    
+    static void (^ const traversalNode)(PFTCallTreeNode *, FILE *) = ^(PFTCallTreeNode *node, FILE *fp) { // Helper function to collect all tree nodes.
+        if (node) {
+            NSString *symbol = [node symbolNameForUse];
+            if ([node lineNumberForDisplay]) {
+                NSString *sourcePath = [node sourcePath];
+                sourcePath = sourcePath.lastPathComponent;
+                symbol = [symbol stringByAppendingFormat:@"(%@:%@)", sourcePath, @([node lineNumberForDisplay])];
+                // 不知道哪里多出来一个 \x10
+                symbol = [symbol stringByReplacingOccurrencesOfString:@"\x10" withString:@""];
+            }
+            TUFPrint(fp, @"%@|%@|%@|%@|%@|%@", @((long long)node), symbol, [node libraryForDisplay], @((long long)[node parent]), @([node numberChildren]), @(node.count));
+            if (node.numberChildren) {
+                NSArray *children = [node children];
+                for (PFTCallTreeNode *childNode in children) {
+                    traversalNode(childNode, fp);
+                }
             }
         }
-        return nodes;
     };
-    NSMutableArray<PFTCallTreeNode *> *nodes = flattenTree(backtraceRepository.rootNode);
-
-    TUFPrint(fp, @"thread|symbol|count|numberChildren|image");
-    for (PFTCallTreeNode *node in nodes) {
-        NSArray *symbolNamePath = [node symbolNamePath];
-        if (symbolNamePath.count > 1) {
-            TUFPrint(fp, @"%@|%@|%@|%@|%@", symbolNamePath[1] , node.symbolName, @(node.count), @(node.numberChildren), node.libraryName.lastPathComponent);
-        }
-    }
-    fclose(fp);
+    TUFPrint(allFp, @"id|symbol|library|parent|childCount|count");
+    TUFPrint(allFp, @"id|symbol|library|parent|childCount|count");
+    traversalNode(backtraceRepository.rootNode, allFp);
+    fclose(allFp);
+    // 过滤system.
+    XRCallTreeDetailView *detailView = TUIvar(controller, _callTreeView);
+    [detailView setValue:@1 forUndefinedKey:@"trimSystemLibraries"];
+    TUFPrint(allFp, @"id|symbol|library|parent|childCount|count");
+    TUFPrint(filterFP, @"id|symbol|library|parent|childCount|count");
+    traversalNode(backtraceRepository.rootNode, filterFP);
+    fclose(filterFP);
 //    TODO 获取函数调用时间。
 //    XRContext *context = contexts[1];
 //    [context display];
@@ -154,10 +169,11 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts) {
 //        }];
 //    }];
 //    fclose(fp);
+    // TODO 做一个 16ms检测， 即将所有在主线程上的调用，计时，判断一次调用中有 超过16ms的情况，记录时间与调用。 调用指堆栈中最深的调用，当一个函数的子调用超时，只记录其子孙，而不记录其自己。 并记录调用发生的时间。
 }
 
 
-void exportFPSData(NSMutableArray<XRContext *> *contexts) {
+void exportFPSData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
     FILE *fp = NULL;
     if (outputPath) {
         NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"fps.txt"];
@@ -167,7 +183,7 @@ void exportFPSData(NSMutableArray<XRContext *> *contexts) {
     [context display];
     XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
     XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
-    XREngineeringTypeFormatter *formatter = TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
+//    XREngineeringTypeFormatter *formatter = TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
     TUFPrint(fp, @"timestamp|period|symbol|fps|gpu");
     [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
         [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
@@ -176,21 +192,22 @@ void exportFPSData(NSMutableArray<XRContext *> *contexts) {
                 XRAnalysisCoreValue *object = nil;
                 // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-                NSString *timestamp = result ? [formatter stringForObjectValue:object] : @"";
+                // 重置时间。
+                int64_t timestamp = startTime + [object.objectValue longLongValue] / 1000000;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
-                NSString *period = result ? object.objectValue : @0;
+                int64_t period = [object.objectValue longLongValue] / 1000000;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 2, &object);
                 double fps = result ? [object.objectValue doubleValue] : 0;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 3, &object);
                 double gpu = result ? [object.objectValue doubleValue] : 0;
-                TUFPrint(fp, @"%@|%@|%2.0f|%4.1f%", timestamp, period, fps, gpu);
+                TUFPrint(fp, @"%@|%@|%2.0f|%4.1f%", @(timestamp), @(period), fps, gpu);
             }
         }];
     }];
     fclose(fp);
 }
 
-void exportNetworkData(NSMutableArray<XRContext *> *contexts) {
+void exportNetworkData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
     FILE *fp = NULL;
     if (outputPath) {
         NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"network.txt"];
@@ -209,9 +226,9 @@ void exportNetworkData(NSMutableArray<XRContext *> *contexts) {
                 XRAnalysisCoreValue *object = nil;
                 // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-                NSString *timestamp = result ? [formatter stringForObjectValue:object] : @"";
+                int64_t timestamp = startTime + [object.objectValue longLongValue] / 1000000;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
-                NSString *interval = result ? object.objectValue : @0;
+                int64_t interval = [object.objectValue longLongValue] / 1000000;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 2, &object);
                 NSString *serialNumber = result ? [formatter stringForObjectValue:object] : @"";
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 3, &object);
@@ -237,7 +254,7 @@ void exportNetworkData(NSMutableArray<XRContext *> *contexts) {
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 17, &object);
                 NSNumber *artt = result ? object.objectValue : @0;
                 
-                TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@", timestamp, interval, serialNumber, owner, interface,
+                TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@|%@", @(timestamp), @(interval), serialNumber, owner, interface,
                          protocol, local, remote, packetsIn, bytesIn, packetsOut, bytesOut, mrtt,artt);
             }
         }];
@@ -246,7 +263,7 @@ void exportNetworkData(NSMutableArray<XRContext *> *contexts) {
 }
 
 
-void exportActivityData(NSMutableArray<XRContext *> *contexts) {
+void exportActivityData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
     FILE *fp = NULL;
     if (outputPath) {
         NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"activity.txt"];
@@ -256,7 +273,7 @@ void exportActivityData(NSMutableArray<XRContext *> *contexts) {
     [context display];
     XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
     XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
-    XREngineeringTypeFormatter *formatter = TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
+//    XREngineeringTypeFormatter *formatter = TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
     TUFPrint(fp, @"timestamp|interval|cpu|userTime|memory|diskRead|diskWrite");
     [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
         [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
@@ -265,9 +282,9 @@ void exportActivityData(NSMutableArray<XRContext *> *contexts) {
                 XRAnalysisCoreValue *object = nil;
                 // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-                NSString *timestamp = result ? [formatter stringForObjectValue:object] : @"";
+                int64_t timestamp = startTime + [object.objectValue longLongValue] / 1000000;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
-                NSString *interval = result ? object.objectValue : @0;
+                int64_t interval = [object.objectValue longLongValue] / 1000000;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 10, &object);
                 NSNumber *cpu = result ? object.objectValue : @0;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 12, &object);
@@ -279,128 +296,136 @@ void exportActivityData(NSMutableArray<XRContext *> *contexts) {
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 14, &object);
                 NSNumber *diskWrite = result ? object.objectValue : @0;
                 
-                TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@", timestamp, interval, cpu, userTime, memory, diskRead, diskWrite);
+                TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@", @(timestamp), @(interval), cpu, userTime, memory, diskRead, diskWrite);
             }
         }];
     }];
     fclose(fp);
 }
 
-void exportMemoryData(NSMutableArray<XRContext *> *contexts) {
-    FILE *fp = NULL;
-    if (outputPath) {
-        NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"memory.txt"];
-        fp = fopen(timeProfileFile.UTF8String, "w+");
-    }
-    XRContext *context = contexts[0];
-    [context display];
-    XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
-    XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
-    XREngineeringTypeFormatter *formatter = TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
-    TUFPrint(fp, @"timestamp|interval|cpu|userTime");
-    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
-        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
-            while (XRAnalysisCoreReadCursorNext(cursor)) {
-                BOOL result = NO;
-                XRAnalysisCoreValue *object = nil;
-                // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-                NSString *timestamp = result ? [formatter stringForObjectValue:object] : @"";
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
-                NSString *interval = result ? object.objectValue : @0;
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 10, &object);
-                NSNumber *cpu = result ? object.objectValue : @0;
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 12, &object);
-                NSNumber *userTime = result ? object.objectValue : @0;
-                
-                TUFPrint(fp, @"%@|%@|%@|%@", timestamp, interval, cpu, userTime);
-            }
-        }];
-    }];
-    fclose(fp);
-}
-
-void exportLeaksData(XRInstrument *instrument) {
+void exportLeaksData(XRLegacyInstrument *instrument, XRContext *context, int64_t startTime) {
+    // 内存泄漏检测, 有些不够精准。
+    // 可以通过断点，查找内存元素来快速发现数据路径。
     FILE *fp = NULL;
     if (outputPath) {
         NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"leaks.txt"];
         fp = fopen(timeProfileFile.UTF8String, "w+");
     }
-    // 内存泄漏检测, 有些不够精准。
-    // 可以通过断点，查找内存元素来快速发现数据路径。
+    // 先从界面上找到 泄漏地址与  Responsibe Library 和 Responsibe Frame
+    id view = [instrument viewForContext:context];
+    PFTTableDetailView *tableView = TUIvar(TUIvar(view, _contentView),_docView);
+    XRContext *leaksContext = TUIvar(instrument, _topLevelContexts)[0];
+    [leaksContext display];
+    [tableView selectAll:nil];
+    NSString *output = [PFTTableDetailView _stringForRows:tableView.selectedRowIndexes inView:tableView delimiter:'|' header:NO];
+    NSArray *lines = [output componentsSeparatedByString:@"\n"];
+    
     XRLeaksRun *run = [instrument valueForKeyPath:@"_run"];
-    XRBacktraceRepository *respository = run.backtraceRepository;
     NSArray<XRLeak *> *allLeaks = [run valueForKeyPath:@"_allLeaks"];
     TUFPrint(fp, @"allocationTimestamp|discoveryTimestamp|name|address|symbol|size|count|image");
     for (XRLeak *leak in allLeaks) {
-        // 打印泄漏，需要过滤
-        NSString *binaryImageName = [leak valueForKeyPath:@"_layout.binaryName"];
-        
-        // 寻找需要展示的堆栈信息。
-        NSString *symbol = @"";
-        unsigned long long *frames = leak.backtrace.frames;
-        // 堆栈数量。
-        NSInteger frameCount = leak.backtrace.count;
-        // TODO这里会有 binaryImage为空的情况。
-        if (binaryImageName) {
-            for (NSInteger i = 0; i < frameCount; i ++) {
-                unsigned long long frame = frames[i];
-                PFTOwnerData *ownerData = [respository libraryForAddress:frame];
-                NSString *imageName = [ownerData libraryName];
-                if ([imageName isEqualToString:binaryImageName]) {
-                    symbol = [respository symbolForPC:frame];
+        NSString *symbolName;
+        NSString *binaryImageName;
+        for (NSString *line in lines) {
+            NSArray *splitedString = [line componentsSeparatedByString:@"|"];
+            if (splitedString.count == 6) {
+                NSString *address = splitedString[2];
+                if ([address isEqualToString:leak.displayAddress]) {
+                    symbolName = splitedString[5];
+                    binaryImageName = splitedString[4];
                     break;
                 }
             }
-        } else {
-            // TODO binaryImage 为空时，暂时无法分析调用函数的来源，所以暂时不输出该类型。
-            continue;
         }
-        TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@|%@", @(leak.allocationTimestamp), @(leak.discoveryTimestamp), leak.className,
-                leak.displayAddress, symbol, @(leak.size),@(leak.count),binaryImageName);
+        int64_t timestamp = startTime + leak.allocationTimestamp / 1000000;
+        int64_t discoveryTime = startTime + leak.discoveryTimestamp / 1000000;
+        TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@|%@", @(timestamp), @(discoveryTime), leak.className,
+                leak.displayAddress, symbolName, @(leak.size),@(leak.count),binaryImageName);
     }
-    fclose(fp);
+    
+
+    
+
 }
 
-// TODO 未搞定 allocations
-//void exportAllocationData (XRObjectAllocInstrument *instrument) {
-//    FILE *fp = NULL;
-//    if (outputPath) {
-//        NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"allocation.txt"];
-//        fp = fopen(timeProfileFile.UTF8String, "w+");
-//    }
-//    XRContext *context = instrument._topLevelContexts[1];
-//    [context display];
-//    XRAnalysisCoreCallTreeViewController *controller = TUIvar(context.container, _callTreeViewController);
-//    XRBacktraceRepository *backtraceRepository = TUIvar(controller, _backtraceRepository);
-//
-//    static NSMutableArray<PFTCallTreeNode *> * (^ const flattenTree)(PFTCallTreeNode *) = ^(PFTCallTreeNode *rootNode) { // Helper function to collect all tree nodes.
-//        NSMutableArray *nodes = [NSMutableArray array];
-//        if (rootNode) {
-//            [nodes addObject:rootNode];
-//            for (PFTCallTreeNode *node in rootNode.children) {
-//                [nodes addObjectsFromArray:flattenTree(node)];
-//            }
-//        }
-//        return nodes;
-//    };
-//    NSMutableArray<PFTCallTreeNode *> *nodes = flattenTree(backtraceRepository.rootNode);
-//
-//    TUFPrint(fp, @"thread|symbol|count|numberChildren|image");
-//    for (PFTCallTreeNode *node in nodes) {
-//        NSArray *symbolNamePath = [node symbolNamePath];
-//        if (symbolNamePath.count > 3) {
-//            TUFPrint(fp, @"%@|%@|%@|%@|%@", symbolNamePath[3] , node.symbolName, @(node.count), @(node.numberChildren), node.libraryName.lastPathComponent);
-//        }
-//    }
-//    fclose(fp);
-//}
+
+void exportAllocationData (XRObjectAllocInstrument *allocInstrument, XRObjectAllocRun *run) {
+    // allocation输出三分数据， 两份 calltree, 一份全部列表:
+    // calltree : 函数调用中，内存增长情况， 又根据是否过滤系统库 即 ‘Hide System Libraries’，分成两份。
+    // list: 所有  Persistent 内存信息， 用于之后的内存泄漏分析。
+    FILE *allCallTreeFile = NULL;
+    FILE *filteredCallTreeFile = NULL;
+    FILE *allocListFile = NULL;
+    if (outputPath) {
+        NSString *file = [outputPath stringByAppendingPathComponent:@"allocation.calltree.txt"];
+        allCallTreeFile = fopen(file.UTF8String, "w+");
+        file = [outputPath stringByAppendingPathComponent:@"allocation.calltree.filtered.txt"];
+        filteredCallTreeFile = fopen(file.UTF8String, "w+");
+        file = [outputPath stringByAppendingPathComponent:@"allocation.list.txt"];
+        allocListFile = fopen(file.UTF8String, "w+");
+    }
+    
+    // calltree 获取：
+    static void (^ const traversalNode)(PFTCallTreeNode *, FILE *) = ^(PFTCallTreeNode *node, FILE *fp) { // Helper function to collect all tree nodes.
+        if (node) {
+            NSString *symbol = [node symbolNameForUse];
+            if ([node lineNumberForDisplay]) {
+                NSString *sourcePath = [node sourcePath];
+                sourcePath = sourcePath.lastPathComponent;
+                symbol = [symbol stringByAppendingFormat:@"(%@:%@)", sourcePath, @([node lineNumberForDisplay])];
+                // 不知道哪里多出来一个 \x10
+                symbol = [symbol stringByReplacingOccurrencesOfString:@"\x10" withString:@""];
+            }
+            TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@", @((long long)node), symbol, [node libraryForDisplay], @((long long)[node parent]), @([node numberChildren]), @(node->weights[0].weight), @(node.count));
+            if (node.numberChildren) {
+                NSArray *children = [node children];
+                for (PFTCallTreeNode *childNode in children) {
+                    traversalNode(childNode, fp);
+                }
+            }
+        }
+    };
+    // 逆向心得记录， 用Xcode 连接到运行中的 Instruments 中， 然后根据界面、头文件， 打上断点， 观察函数调用， 最终确定实际调用方式。
+    // 以下代码是设置选择全部创建元素，以分析内存创建情况。 不含有以下代码，分析的时创建的持久化数据。
+    // 即 Instruments 下方的 All Allocations . 默认为 Created & Persistent.
+    //    [run setLifecycleFilter:NO];
+    //    [allocInstrument updateCurrentDetailView:YES];
+    
+    // 展示后，获取到数据。
+    [allocInstrument._topLevelContexts[1] display];
+    XRContext *context = allocInstrument._topLevelContexts[1];
+    XRCallTreeDetailView *callTreeView = TUIvar(context.container,_currentView);
+    XRBacktraceRepository *backtraceRepository = TUIvar(callTreeView , backtraceDataSource);
+    [backtraceRepository refreshTreeRoot];
+    // 遍历并输出。
+    TUFPrint(allCallTreeFile, @"id|symbol|library|parent|childCount|bytes|count");
+    traversalNode(backtraceRepository.rootNode, allCallTreeFile);
+    fclose(allCallTreeFile);
+    // 过滤系统库
+    backtraceRepository.trimSystemLibraries = YES;
+    [backtraceRepository refreshTreeRoot];
+    // 遍历并输出。
+    TUFPrint(filteredCallTreeFile, @"id|symbol|library|parent|childCount|bytes|count");
+    traversalNode(backtraceRepository.rootNode, filteredCallTreeFile);
+    fclose(filteredCallTreeFile);
+    
+    // 输出 list.
+    TUFPrint(allocListFile, @"id|address|name|time|*|bytes|library|symbol");
+    [allocInstrument._topLevelContexts[2] display];
+    PFTTableDetailView *tableView = TUIvar(TUIvar(allocInstrument, _objectListController), _view);
+    [tableView selectAll:nil];
+    NSString *output = [PFTTableDetailView _stringForRows:tableView.selectedRowIndexes inView:tableView delimiter:'|' header:NO];
+    if (allocListFile) {
+        fprintf(allocListFile, "%s", output.UTF8String);
+        fclose(allocListFile);
+    }
+}
 
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-
+        
         if (!parseArguments(arguments)) {
             return 1;
         }
@@ -408,7 +433,7 @@ int main(int argc, const char * argv[]) {
         DVTInitializeSharedFrameworks();
         [DVTDeveloperPaths initializeApplicationDirectoryName:@"Instruments"];
         [XRInternalizedSettingsStore configureWithAdditionalURLs:nil];
-        [[XRCapabilityRegistry applicationCapabilities]registerCapability:@"com.apple.dt.instruments.track_pinning" versions:NSMakeRange(1, 1)];
+        [[XRCapabilityRegistry applicationCapabilities] registerCapability:@"com.apple.dt.instruments.track_pinning" versions:NSMakeRange(1, 1)];
         PFTLoadPlugins();
 
         // Instruments has its own subclass of NSDocumentController without overriding sharedDocumentController method.
@@ -416,7 +441,7 @@ int main(int argc, const char * argv[]) {
         [PFTDocumentController sharedDocumentController];
         // Open a trace document.
         NSError *error = nil;
-        PFTTraceDocument *document = [[PFTTraceDocument alloc]initWithContentsOfURL:[NSURL fileURLWithPath:tracePath] ofType:@"com.apple.instruments.trace" error:&error];
+        PFTTraceDocument *document = [[PFTTraceDocument alloc] initWithContentsOfURL:[NSURL fileURLWithPath:tracePath] ofType:@"com.apple.instruments.trace" error:&error];
         if (error) {
             TUPrint(@"Error: %@", error);
             return 1;
@@ -443,6 +468,8 @@ int main(int argc, const char * argv[]) {
             for (XRRun *run in runs) {
                 TUPrint(@"Run #%@: %@", @(run.runNumber), run.displayName);
                 instrument.currentRun = run;
+                // 用时间戳标记时间。 文档中的时间戳，是服务器时间，不是设备时间，所以可信。
+                int64_t startTime = run.startTime * 1000;
 
                 // Common routine to obtain contexts for the instrument.
                 NSMutableArray<XRContext *> *contexts = [NSMutableArray array];
@@ -464,19 +491,19 @@ int main(int argc, const char * argv[]) {
                 // Here are some straightforward example code demonstrating how to process the data from several commonly used instruments.
                 NSString *instrumentID = instrument.type.uuid;
                 TUPrint(@"instrumentID : %@", instrumentID);
-                if ([instrumentID isEqualToString:@"org.axe.instruments.time-profiler"]) {
-                    //com.apple.xray.instrument-type.coresampler2
+                if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.coresampler2"]) {
                     exportTimeProfilerData(contexts);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.gpu"]) {
-                    exportFPSData(contexts);
+                    exportFPSData(contexts, startTime);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.network"]) {
-                    exportNetworkData(contexts);
+                    exportNetworkData(contexts, startTime);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.system"]) {
-                    exportActivityData(contexts);
+                    exportActivityData(contexts, startTime);
                 } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.oa"]) {
-//                    exportAllocationData(instrument);
+                    exportAllocationData((XRObjectAllocInstrument *)instrument, (XRObjectAllocRun *)run);
                 } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.homeleaks"]) {
-                    exportLeaksData(instrument);
+                    XRContext *context = TUIvar(document, _restorationContext);
+                    exportLeaksData((XRLegacyInstrument *)instrument, context, startTime);
                 } else {
                     TUPrint(@"Data processor has not been implemented for this type of instrument.");
                 }

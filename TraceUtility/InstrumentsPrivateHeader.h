@@ -502,6 +502,9 @@ struct XRBacktraceFragment {
 - (NSString *)categoryNameOrDescription;
 @end
 
+@interface XROutlineDetailView : NSTableView
+- (void)expandItem:(id)arg1 expandChildren:(BOOL)arg2;
+@end
 @interface PFTTableDetailView : NSTableView
 - (void)_copyWithHeader:(BOOL)arg1;
 + (id)_stringForRows:(id)arg1 inView:(id)arg2 delimiter:(unsigned short)arg3 header:(BOOL)arg4;

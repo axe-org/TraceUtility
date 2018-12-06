@@ -459,14 +459,18 @@ void exportLeaksData(XRLegacyInstrument *instrument, XRContext *context, int64_t
     }
     // 先从界面上找到 泄漏地址与  Responsibe Library 和 Responsibe Frame
     id view = [instrument viewForContext:context];
-    PFTTableDetailView *tableView = TUIvar(TUIvar(view, _contentView),_docView);
+    XROutlineDetailView *tableView = TUIvar(TUIvar(view, _contentView),_docView);
     XRContext *leaksContext = TUIvar(instrument, _topLevelContexts)[0];
     [leaksContext display];
+    XRLeaksRun *run = [instrument valueForKeyPath:@"_run"];
+    NSMapTable *table = TUIvar(run, _btAggregatedLeaks);
+    for (id aggregatedLeak in table.objectEnumerator) {
+        [tableView expandItem:aggregatedLeak expandChildren:NO];
+    }
     [tableView selectAll:nil];
     NSString *output = [PFTTableDetailView _stringForRows:tableView.selectedRowIndexes inView:tableView delimiter:'|' header:NO];
     NSArray *lines = [output componentsSeparatedByString:@"\n"];
     
-    XRLeaksRun *run = [instrument valueForKeyPath:@"_run"];
     NSArray<XRLeak *> *allLeaks = [run valueForKeyPath:@"_allLeaks"];
     TUFPrint(fp, @"allocationTimestamp|discoveryTimestamp|name|address|symbol|size|count|image");
     for (XRLeak *leak in allLeaks) {
@@ -488,10 +492,7 @@ void exportLeaksData(XRLegacyInstrument *instrument, XRContext *context, int64_t
         TUFPrint(fp, @"%@|%@|%@|%@|%@|%@|%@|%@", @(timestamp), @(discoveryTime), leak.className,
                 leak.displayAddress, symbolName, @(leak.size),@(leak.count),binaryImageName);
     }
-    
-
-    
-
+    fclose(fp);
 }
 
 
@@ -561,17 +562,15 @@ void exportAllocationData (XRObjectAllocInstrument *allocInstrument, XRObjectAll
     PFTTableDetailView *tableView = TUIvar(TUIvar(allocInstrument, _objectListController), _view);
     [tableView selectAll:nil];
     NSString *output = [PFTTableDetailView _stringForRows:tableView.selectedRowIndexes inView:tableView delimiter:'|' header:NO];
-    if (allocListFile) {
-        fprintf(allocListFile, "%s", output.UTF8String);
-        fclose(allocListFile);
-    }
+    TUFPrint(allocListFile, @"%@", output);
+    fclose(allocListFile);
 }
 
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-//        arguments = @[@"TraceUtil", @"/Users/luoxianming/Documents/Testing/traceTest/AXE.trace", @"-o", @"/Users/luoxianming/Documents/Testing/traceTest/xxx"];
+//        arguments = @[@"TraceUtil", @"/Users/luoxianming/Documents/Testing/traceTest/Leaks.trace", @"-o", @"/Users/luoxianming/Documents/Testing/traceTest/xxx"];
         if (!parseArguments(arguments)) {
             return 1;
         }

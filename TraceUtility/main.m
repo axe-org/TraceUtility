@@ -120,13 +120,11 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts) {
         }
     };
     TUFPrint(allFp, @"id|symbol|library|parent|childCount|count");
-    TUFPrint(allFp, @"id|symbol|library|parent|childCount|count");
     traversalNode(backtraceRepository.rootNode, allFp);
     fclose(allFp);
     // 过滤system.
     XRCallTreeDetailView *detailView = TUIvar(controller, _callTreeView);
     [detailView setValue:@1 forUndefinedKey:@"trimSystemLibraries"];
-    TUFPrint(allFp, @"id|symbol|library|parent|childCount|count");
     TUFPrint(filterFP, @"id|symbol|library|parent|childCount|count");
     traversalNode(backtraceRepository.rootNode, filterFP);
     fclose(filterFP);
@@ -183,8 +181,7 @@ void exportFPSData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
     [context display];
     XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
     XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
-//    XREngineeringTypeFormatter *formatter = TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
-    TUFPrint(fp, @"timestamp|period|symbol|fps|gpu");
+    TUFPrint(fp, @"timestamp|period|fps|gpu");
     [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
         [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
             while (XRAnalysisCoreReadCursorNext(cursor)) {
@@ -273,7 +270,6 @@ void exportActivityData(NSMutableArray<XRContext *> *contexts, int64_t startTime
     [context display];
     XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
     XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
-//    XREngineeringTypeFormatter *formatter = TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
     TUFPrint(fp, @"timestamp|interval|cpu|userTime|memory|diskRead|diskWrite");
     [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
         [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {

@@ -303,6 +303,88 @@ SInt64 XRAnalysisCoreReadCursorColumnCount(XRAnalysisCoreReadCursor *cursor);
 XRStoredValue XRAnalysisCoreReadCursorGetStored(XRAnalysisCoreReadCursor *cursor, UInt8 column);
 BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 column, XRAnalysisCoreValue * __strong *pointer);
 
+
+struct XRUInt64Array {
+    unsigned long long *values;
+    unsigned int count;
+};
+
+union XRStoredValue {
+    unsigned int uint32;
+    unsigned long long uint64;
+    unsigned int iid;
+};
+
+
+struct XRStoredUInt64Array {
+    struct XRUInt64Array _field1;
+    union XRStoredValue _field2;
+};
+
+struct XRBacktraceFragment {
+    unsigned int _field1;
+    int _field2;
+    union {
+        struct XRUInt64Array _field1;
+        struct XRStoredUInt64Array _field2;
+    } _field3;
+};
+
+@interface XRBacktraceTypeAdapter : NSObject
+{
+@public
+    int _pid;
+    unsigned int _totalFrameCount;
+    unsigned int _fragCount;
+    struct XRBacktraceFragment __fragStore[5];
+    struct XRBacktraceFragment *_fragments;
+    double *_weights;
+    unsigned long long _weightCount;
+    unsigned int _sampleCount;
+    unsigned int _kernelIID;
+}
+
+- (void)copyWeightArray:(const double *)arg1 outputDeltas:(double *)arg2 weightCount:(unsigned long long)arg3 sampleCount:(unsigned int)arg4 sampleCountDelta:(unsigned int *)arg5;
+- (BOOL)bottomIsTruncated;
+- (void)setBottomIsTruncated:(BOOL)arg1;
+- (BOOL)topIsTruncated;
+- (void)setTopIsTruncated:(BOOL)arg1;
+- (long long)count;
+//- (void)enumerateFramesInRange:(struct _NSRange)arg1 options:(unsigned long long)arg2 block:(CDUnknownBlockType)arg3;
+- (unsigned long long *)frames;
+- (int)pid;
+- (id)init;
+- (void)dealloc;
+- (id)initWithAnalysisCoreValue:(id)arg1;
+
+// Remaining properties
+@property(readonly, copy) NSString *debugDescription;
+@property(readonly, copy) NSString *description;
+@property(readonly) unsigned long long hash;
+@property(readonly) Class superclass;
+
+@end
+
+@interface PFTDisplaySymbol : NSObject
+
+- (id)copyWithZone:(struct _NSZone *)arg1;
+- (void)encodeWithCoder:(id)arg1;
+- (id)initWithCoder:(id)arg1;
+- (long long)lineNumberForDisplay;
+- (id)pathForDisplay;
+- (id)symbolNameForUse;
+- (NSString *)symbolNameForDisplay;
+- (id)libraryForDisplay;
+- (id)resolvedSymbol;
+- (NSString *)libraryPath;
+- (id)libraryName;
+- (id)symbolName;
+- (int)pid;
+- (unsigned long long)lineNumber;
+- (id)sourcePath;
+- (unsigned long long)address;
+@end
+
 @interface XREngineeringTypeFormatter : NSFormatter
 @end
 
@@ -351,6 +433,7 @@ BOOL XRAnalysisCoreReadCursorGetValue(XRAnalysisCoreReadCursor *cursor, UInt8 co
 
 @interface XRAnalysisCoreTableViewController : NSViewController <XRFilteredDataSource, XRSearchTarget>
 - (DTRenderableContentResponse *)_currentResponse;
+- (id)_objectForStackDataElement:(id)arg1;
 @end
 
 @interface XRManagedEventArrayController : NSArrayController

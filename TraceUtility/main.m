@@ -83,15 +83,97 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
 }
 
 #pragma mark - export data from instruments
-void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts) {
-    // timeProfile 输出两份数据，一个是全部，一个是过滤系统库调用，只留有APP相关的调用。
+
+// 是一个树的结构。
+@interface CallNode : NSObject
+
+@property (nonatomic, assign) NSTimeInterval startTime;
+@property (nonatomic, strong) NSString *label;
+@property (nonatomic, strong) PFTDisplaySymbol *symbol;
+@property (nonatomic, strong) CallNode *subNode;
+@property (nonatomic, weak) CallNode *parent;
+
+// runLoopType , 为 “__CFRunLoopDoObservers” ，"__CFRunLoopDoBlocks" , "__CFRunLoopDoSources0" , "__CFRUNLOOP_IS_SERVICING_THE_MAIN_DISPATCH_QUEUE__" , "__CFRunLoopDoSource1"
+@property (nonatomic, strong) NSString *runLoopType;
+
+// 当子node已有超时的情况下，不考虑父节点的超时。 设置这个属性的原因，是当我们发生新的卡顿时，我们应该优先解决所有小的卡顿问题，再一点一点解决问题。
+@property (nonatomic, assign) BOOL ignoreBecauseSubNode;
+
+@end
+
+@implementation CallNode
+
++ (CallNode *)nodesFromLabels:(NSArray *)labels startTime:(NSTimeInterval)startTime {
+    if (labels.count == 0) {
+        return nil;
+    }
+    // 先检测RunLoop.
+    NSArray *runLoopTypes = @[@"__CFRunLoopDoObservers", @"__CFRunLoopDoBlocks", @"__CFRunLoopDoSources0", @"__CFRunLoopDoSource1", @"__CFRUNLOOP_IS_SERVICING_THE_MAIN_DISPATCH_QUEUE__"];
+    NSString *runLoopType;
+    for (PFTDisplaySymbol *symbol in labels) {
+        if ([runLoopTypes containsObject:[symbol symbolNameForDisplay]]) {
+            runLoopType = [symbol symbolNameForDisplay];
+            break;
+        }
+    }
+    // 如果没有runLoopType，则进行忽略。
+    if (!runLoopType) {
+        return nil;
+    }
+    CallNode *root;
+    CallNode *prev;
+    for (PFTDisplaySymbol *symbol in labels) {
+        // 过滤 System library
+        if ([symbol.libraryPath containsString:@"Library/Developer/Xcode/iOS DeviceSupport"]) {
+            // 系统库放在 /Users/xxx/Library/Developer/Xcode/iOS DeviceSupport/12.1 (16B5084a)/Symbols 下，进行简单检测。
+            continue;
+        }
+        CallNode *current = [[CallNode alloc] init];
+        current.startTime = startTime;
+        current.symbol = symbol;
+        current.label = [symbol symbolNameForDisplay];
+        current.parent = prev;
+        current.runLoopType = runLoopType;
+        if (!root) {
+            root = current;
+        } else {
+            prev.subNode = current;
+        }
+        prev = current;
+    }
+    root.runLoopType = runLoopType;
+    return root;
+}
+
+// 找到层次最多的，超过耗时的子孙。
+- (CallNode *)findSubNodeAtTime:(NSTimeInterval)time overTimeInterval:(NSTimeInterval)interval {
+    if (time - _startTime > interval) {
+        CallNode *subFind = [_subNode findSubNodeAtTime:time overTimeInterval:interval];
+        if (subFind) {
+            return subFind;
+        } else {
+            // 只有自己时，要判断自己是否有标记。
+            return _ignoreBecauseSubNode ? nil : self;
+        }
+    } else {
+        return nil;
+    }
+}
+
+@end
+
+void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument *instrument) {
+    // timeProfile 输出3份数据，一个是全部，一个是过滤系统库调用，只留有APP相关的调用, 还有一个是 所有APP调用的卡顿情况（目前可能不够精确）。
     FILE *allFp = NULL;
     FILE *filterFP = NULL;
+    FILE *blockFP = NULL;
     if (outputPath) {
         NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"timeprofiler.txt"];
         allFp = fopen(timeProfileFile.UTF8String, "w+");
         timeProfileFile = [outputPath stringByAppendingPathComponent:@"timeprofiler-filtered.txt"];
         filterFP = fopen(timeProfileFile.UTF8String, "w+");
+        timeProfileFile = [outputPath stringByAppendingPathComponent:@"blockedcall.txt"];
+        blockFP = fopen(timeProfileFile.UTF8String, "w+");
     }
     // Time Profiler: print out all functions in descending order of self execution time.
     // 3 contexts: Profile, Narrative, Samples
@@ -99,7 +181,7 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts) {
     [context display];
     XRAnalysisCoreCallTreeViewController *controller = TUIvar(context.container, _callTreeViewController);
     XRBacktraceRepository *backtraceRepository = TUIvar(controller, _backtraceRepository);
-    
+
     static void (^ const traversalNode)(PFTCallTreeNode *, FILE *) = ^(PFTCallTreeNode *node, FILE *fp) { // Helper function to collect all tree nodes.
         if (node) {
             NSString *symbol = [node symbolNameForUse];
@@ -128,46 +210,114 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts) {
     TUFPrint(filterFP, @"id|symbol|library|parent|childCount|count");
     traversalNode(backtraceRepository.rootNode, filterFP);
     fclose(filterFP);
-//    TODO 获取函数调用时间。
-//    XRContext *context = contexts[1];
-//    [context display];
-//    XRAnalysisCoreDetailViewController *detailVC = TUIvar(TUIvar(instrument, _viewController), _detailController);
-//    XRAnalysisCoreTableViewController *controller = TUIvar(detailVC, _tabularViewController);
-//    id provider = TUIvar(controller, _provider);
-//    id activeResponse = TUIvar(provider, _activeResponse);
-//    id content = TUIvar(activeResponse, _content);
-//    XRAnalysisCorePivotArray *array = TUIvar(content, _rows);
-//    XRTraceEngineeringTypeFormatter *formatter = (XRTraceEngineeringTypeFormatter *)TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
-//    TUFPrint(fp, @"time,thread,process,weight,backtrace");
-//    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
-//        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
-//            while (XRAnalysisCoreReadCursorNext(cursor)) {
-//                BOOL result = NO;
-//                XRAnalysisCoreValue *object = nil;
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-//                NSString *timestamp = result ? [formatter stringForObjectValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
-//                NSString *thread = result ? [formatter stringForThreadEngineeringValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 2, &object);
-//                NSString *process = result ? [formatter stringForProcessEngineeringValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 3, &object);
-//                NSString *weight = result ? [formatter stringForObjectValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 4, &object);
-//                NSString *backtrace = result ? [formatter stringForBacktraceEngineeringValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 5, &object);
-//                NSString *backtrace5 = result ? [formatter stringForBacktraceEngineeringValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 6, &object);
-//                NSString *backtrace6 = result ? [formatter stringForBacktraceEngineeringValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 7, &object);
-//                NSString *backtrace7 = result ? [formatter stringForBacktraceEngineeringValue:object] : @"";
-//                result = XRAnalysisCoreReadCursorGetValue(cursor, 8, &object);
-//                NSString *backtrace8 = result ? [formatter stringForBacktraceEngineeringValue:object] : @"";
-//                TUFPrint(fp, @"%@,%@,%@,%@,%@,%@,%@,%@,%@", timestamp, thread, process, weight, backtrace, backtrace5, backtrace6, backtrace7, backtrace8);
-//            }
-//        }];
-//    }];
-//    fclose(fp);
-    // TODO 做一个 16ms检测， 即将所有在主线程上的调用，计时，判断一次调用中有 超过16ms的情况，记录时间与调用。 调用指堆栈中最深的调用，当一个函数的子调用超时，只记录其子孙，而不记录其自己。 并记录调用发生的时间。
+    
+    // 获取block数据。
+    context = contexts[2];
+    [context display];
+    XRAnalysisCoreDetailViewController *detailVC = TUIvar(TUIvar(instrument, _viewController), _detailController);
+    XRAnalysisCoreTableViewController *coreTableViewController = TUIvar(detailVC, _tabularViewController);
+    id response = TUIvar(coreTableViewController, __response);
+    id content;
+    if (response) {
+        content = TUIvar(response, _content);
+    }
+    if (!content) {
+        id provider = TUIvar(coreTableViewController, _provider);
+        response = TUIvar(provider, _activeResponse);
+        content = TUIvar(response, _content);
+    }
+    XRAnalysisCorePivotArray *array = TUIvar(content, _rows);
+    XRTraceEngineeringTypeFormatter *formatter = (XRTraceEngineeringTypeFormatter *)TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
+    TUFPrint(blockFP, @"time|symbol|library|cost");
+    // 目前思路为 ： 以所有非系统库构建树， 去除掉main函数。 同时根据RunLoop状态，进行切换。
+    __block CallNode *rootNode;
+    static NSTimeInterval checkTimeInterval = 17;// 大于等于17认为发生卡顿。
+    // Instruments Time Profiler的原理是每隔一段时间检测一次CPU的状态，然后记录堆栈进行分析。 这个间隔默认为1毫米。
+    // 而默认的监控没有记录线程状态，即是否休眠。 导致需要通过一个间隔来区分现场休眠情况。
+    // 这个鬼东西的误差在于 IO操作和其他操作，会进行等待。导致无法了解到线程的实际状态。
+    // 或者可以考虑通过 黑名单来解决问题？
+    static NSTimeInterval maxIntervalInFrame = 10; // 超过10毫秒，则认为主线程发生了休眠，进行清空。
+    static NSTimeInterval lastTime = -1000;
+    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
+        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
+            while (XRAnalysisCoreReadCursorNext(cursor)) {
+                BOOL result = NO;
+                XRAnalysisCoreValue *object = nil;
+                // 取毫秒时间。
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
+                NSTimeInterval time = [object.objectValue doubleValue] / 1000000;
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
+                NSString *thread = result ? [formatter stringForThreadEngineeringValue:object] : @"";
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 6, &object);
+                // 检测是否是主线程。
+                if (![thread containsString:@"Main Thread"]) {
+                    continue;
+                }
+                XRBacktraceTypeAdapter *adapter = [[XRBacktraceTypeAdapter alloc] initWithAnalysisCoreValue:object];
+                NSArray *labels = [coreTableViewController _objectForStackDataElement:adapter];
+                labels = [[labels reverseObjectEnumerator] allObjects];
+                if (!rootNode) {
+                    rootNode = [CallNode nodesFromLabels:labels startTime:time];
+                } else {
+                    // 先拿 runLoopType ,判断是否发生变化。
+                    CallNode *newRootNode = [CallNode nodesFromLabels:labels startTime:time];
+                    // 先检测是否发生了 runLoop 变化。
+                    if (time - lastTime > maxIntervalInFrame || ![newRootNode.runLoopType isEqualToString:rootNode.runLoopType]) {
+                        // 如果runloop发生变化，我们认为一次调用完成，清理掉之前的堆栈。
+                        // 第一个node是 main函数，进行忽略。
+                        CallNode *overTimeNode = [rootNode.subNode findSubNodeAtTime:lastTime + 1 overTimeInterval:checkTimeInterval];
+                        if (overTimeNode) {
+                            NSString *library = [overTimeNode.symbol libraryForDisplay];
+                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(overTimeNode.startTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
+                        }
+                        rootNode = newRootNode;
+                    } else {
+                        // 如果RunLoop不变。
+                        // 检测链路上是否发生变更。
+                        CallNode *giveupNode = rootNode;
+                        CallNode *prevNode = rootNode;
+                        CallNode *newNode = newRootNode;
+                        for (NSInteger i = 0; i < labels.count; i++) {
+                            if ([newNode.label isEqualToString:giveupNode.label]) {
+                                prevNode = giveupNode;
+                                giveupNode = giveupNode.subNode;
+                                newNode = newNode.subNode;
+                            } else {
+                                break;
+                            }
+                        }
+                        if (giveupNode) {
+                            // 如果有要放弃的节点。 根节点始终是 main.
+                            giveupNode.parent.subNode = newNode;
+                            newNode.parent = giveupNode.parent;
+                            
+                        } else if(newNode) {
+                            newNode.parent = prevNode;
+                            prevNode.subNode = newNode;
+                        }
+                        if (newNode) {
+                            rootNode.runLoopType = newNode.runLoopType;
+                        }
+                        // 计算giveup连上是否有超时。
+                        CallNode *overTimeNode = [giveupNode findSubNodeAtTime:lastTime + 1 overTimeInterval:checkTimeInterval];
+                        if (overTimeNode) {
+                            // 如果找到了超时节点，要将父类的节点都设置上标记。
+                            CallNode *parent = overTimeNode.parent;
+                            while (parent) {
+                                parent.ignoreBecauseSubNode = YES;
+                                parent = parent.parent;
+                            }
+                            NSString *library = [overTimeNode.symbol libraryForDisplay];
+                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(overTimeNode.startTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
+                        }
+                        
+                    }
+                }
+                lastTime = time;
+            }
+        }];
+    }];
+    fclose(blockFP);
 }
 
 
@@ -421,7 +571,7 @@ void exportAllocationData (XRObjectAllocInstrument *allocInstrument, XRObjectAll
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-        
+//        arguments = @[@"TraceUtil", @"/Users/luoxianming/Documents/Testing/traceTest/AXE.trace", @"-o", @"/Users/luoxianming/Documents/Testing/traceTest/xxx"];
         if (!parseArguments(arguments)) {
             return 1;
         }
@@ -488,7 +638,7 @@ int main(int argc, const char * argv[]) {
                 NSString *instrumentID = instrument.type.uuid;
                 TUPrint(@"instrumentID : %@", instrumentID);
                 if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.coresampler2"]) {
-                    exportTimeProfilerData(contexts);
+                    exportTimeProfilerData(contexts, instrument);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.gpu"]) {
                     exportFPSData(contexts, startTime);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.network"]) {

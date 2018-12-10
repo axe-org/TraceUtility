@@ -162,7 +162,7 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
 
 @end
 
-void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument *instrument) {
+void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument *instrument, int64_t startTime) {
     // timeProfile 输出3份数据，一个是全部，一个是过滤系统库调用，只留有APP相关的调用, 还有一个是 所有APP调用的卡顿情况（目前可能不够精确）。
     FILE *allFp = NULL;
     FILE *filterFP = NULL;
@@ -268,7 +268,8 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
                         CallNode *overTimeNode = [rootNode.subNode findSubNodeAtTime:lastTime + 1 overTimeInterval:checkTimeInterval];
                         if (overTimeNode) {
                             NSString *library = [overTimeNode.symbol libraryForDisplay];
-                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(overTimeNode.startTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
+                            int64_t absoluteTime = startTime + overTimeNode.startTime;
+                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(absoluteTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
                         }
                         rootNode = newRootNode;
                     } else {
@@ -308,7 +309,8 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
                                 parent = parent.parent;
                             }
                             NSString *library = [overTimeNode.symbol libraryForDisplay];
-                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(overTimeNode.startTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
+                            int64_t absoluteTime = startTime + overTimeNode.startTime;
+                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(absoluteTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
                         }
                         
                     }
@@ -637,7 +639,7 @@ int main(int argc, const char * argv[]) {
                 NSString *instrumentID = instrument.type.uuid;
                 TUPrint(@"instrumentID : %@", instrumentID);
                 if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.coresampler2"]) {
-                    exportTimeProfilerData(contexts, instrument);
+                    exportTimeProfilerData(contexts, instrument, startTime);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.gpu"]) {
                     exportFPSData(contexts, startTime);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.network"]) {

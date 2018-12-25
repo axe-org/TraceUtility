@@ -87,7 +87,8 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
 // 是一个树的结构。
 @interface CallNode : NSObject
 
-@property (nonatomic, assign) NSTimeInterval startTime;
+@property (nonatomic, assign) double startTime;//单位毫秒。
+@property (nonatomic, strong) NSString *sampleTime;// 在instruments页面展示的时间。
 @property (nonatomic, strong) NSString *label;
 @property (nonatomic, strong) PFTDisplaySymbol *symbol;
 @property (nonatomic, strong) CallNode *subNode;
@@ -130,6 +131,7 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
         }
         CallNode *current = [[CallNode alloc] init];
         current.startTime = startTime;
+        current.sampleTime = [CallNode formatSampleTime:startTime];
         current.symbol = symbol;
         current.label = [symbol symbolNameForDisplay];
         current.parent = prev;
@@ -145,6 +147,14 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
     return root;
 }
 
++ (NSString *)formatSampleTime: (NSTimeInterval)startTime {
+    int64_t time = startTime * 1000;
+    int us = time % 1000;
+    int ms = (time / 1000) % 1000;
+    int second = (int)(time / 1000000);
+    return [NSString stringWithFormat:@"%02d:%02d.%03d.%03d", second / 60, second % 60, ms, us];
+}
+
 // 找到层次最多的，超过耗时的子孙。
 - (CallNode *)findSubNodeAtTime:(NSTimeInterval)time overTimeInterval:(NSTimeInterval)interval {
     if (time - _startTime > interval) {
@@ -158,6 +168,27 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
     } else {
         return nil;
     }
+}
+
+
+/**
+  根据当前最底层的超时节点，找到最上层的超时节点。
+
+ @param overTimeNode 当前超时节点
+ @return 当前超时节点的根节点， 需要注意，当该根节点被抛弃时，才会去记录（即堆栈变更或runloop状态变化）
+ */
+- (CallNode *)findRootNodeFromOverTimeNode:(CallNode *)overTimeNode {
+    if (overTimeNode) {
+        // 至少时间相差10毫秒，我们才去统计这个根节点。
+        if (self.subNode != overTimeNode && overTimeNode.startTime - self.subNode.startTime > 10) {
+            return self.subNode;
+        }
+    } else {
+        if (self.subNode.ignoreBecauseSubNode) {
+            return self.subNode;
+        }
+    }
+    return nil;
 }
 
 @end
@@ -214,6 +245,9 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
     // 获取block数据。
     context = contexts[2];
     [context display];
+    // 停留10秒, 以等待数据加载完成。 TODO 可能有问题，发现问题时再做优化。
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 10000 * NSEC_PER_MSEC));
     XRAnalysisCoreDetailViewController *detailVC = TUIvar(TUIvar(instrument, _viewController), _detailController);
     XRAnalysisCoreTableViewController *coreTableViewController = TUIvar(detailVC, _tabularViewController);
     id response = TUIvar(coreTableViewController, __response);
@@ -228,16 +262,14 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
     }
     XRAnalysisCorePivotArray *array = TUIvar(content, _rows);
     XRTraceEngineeringTypeFormatter *formatter = (XRTraceEngineeringTypeFormatter *)TUIvarCast(array.source, _filter, XRAnalysisCoreTableQuery * const).fullTextSearchSpec.formatter;
-    TUFPrint(blockFP, @"time|symbol|library|cost");
+    TUFPrint(blockFP, @"sampleTime|time|symbol|library|cost");
     // 目前思路为 ： 以所有非系统库构建树， 去除掉main函数。 同时根据RunLoop状态，进行切换。
     __block CallNode *rootNode;
     static NSTimeInterval checkTimeInterval = 17;// 大于等于17认为发生卡顿。
-    // Instruments Time Profiler的原理是每隔一段时间检测一次CPU的状态，然后记录堆栈进行分析。 这个间隔默认为1毫米。
-    // 而默认的监控没有记录线程状态，即是否休眠。 导致需要通过一个间隔来区分现场休眠情况。
-    // 这个鬼东西的误差在于 IO操作和其他操作，会进行等待。导致无法了解到线程的实际状态。
-    // 或者可以考虑通过 黑名单来解决问题？
-    static NSTimeInterval maxIntervalInFrame = 10; // 超过10毫秒，则认为主线程发生了休眠，进行清空。
+    // Instruments Time Profiler的原理是每隔一段时间检测一次CPU的状态，然后记录堆栈进行分析。 这个间隔默认为1毫秒。
+    // TODO 验证 文件读写、锁 等阻塞操作下，检测是否正确。 验证定时器或者runloop监听器下，能否正确处理。
     static NSTimeInterval lastTime = -1000;
+    static NSTimeInterval const timeProfilerCheckInterval = 1;// time profiler检测间隔，目前为1毫秒。
     [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
         [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
             while (XRAnalysisCoreReadCursorNext(cursor)) {
@@ -245,7 +277,8 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
                 XRAnalysisCoreValue *object = nil;
                 // 取毫秒时间。
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-                NSTimeInterval time = [object.objectValue doubleValue] / 1000000;
+                // 毫秒
+                double time = [object.objectValue doubleValue] / 1000000;
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
                 NSString *thread = result ? [formatter stringForThreadEngineeringValue:object] : @"";
                 result = XRAnalysisCoreReadCursorGetValue(cursor, 6, &object);
@@ -259,17 +292,23 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
                 if (!rootNode) {
                     rootNode = [CallNode nodesFromLabels:labels startTime:time];
                 } else {
-                    // 先拿 runLoopType ,判断是否发生变化。
                     CallNode *newRootNode = [CallNode nodesFromLabels:labels startTime:time];
                     // 先检测是否发生了 runLoop 变化。
-                    if (time - lastTime > maxIntervalInFrame || ![newRootNode.runLoopType isEqualToString:rootNode.runLoopType]) {
+                    if (![newRootNode.runLoopType isEqualToString:rootNode.runLoopType]) {
                         // 如果runloop发生变化，我们认为一次调用完成，清理掉之前的堆栈。
                         // 第一个node是 main函数，进行忽略。
-                        CallNode *overTimeNode = [rootNode.subNode findSubNodeAtTime:lastTime + 1 overTimeInterval:checkTimeInterval];
+                        CallNode *overTimeNode = [rootNode.subNode findSubNodeAtTime:lastTime + timeProfilerCheckInterval overTimeInterval:checkTimeInterval];
                         if (overTimeNode) {
                             NSString *library = [overTimeNode.symbol libraryForDisplay];
                             int64_t absoluteTime = startTime + overTimeNode.startTime;
-                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(absoluteTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
+                            TUFPrint(blockFP, @"%@|%@|%@|%@|%@", overTimeNode.sampleTime, @(absoluteTime), overTimeNode.label, library, @(lastTime + timeProfilerCheckInterval - overTimeNode.startTime));
+                        }
+                        // 标记一下 根节点的耗时。
+                        CallNode *overTimeRootNode = [rootNode findRootNodeFromOverTimeNode:overTimeNode];
+                        if (overTimeRootNode) {
+                            NSString *library = [overTimeRootNode.symbol libraryForDisplay];
+                            int64_t absoluteTime = startTime + overTimeRootNode.startTime;
+                            TUFPrint(blockFP, @"%@|%@|%@|%@|%@", overTimeRootNode.sampleTime, @(absoluteTime), overTimeRootNode.label, library, @(lastTime + timeProfilerCheckInterval - overTimeRootNode.startTime));
                         }
                         rootNode = newRootNode;
                     } else {
@@ -287,20 +326,8 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
                                 break;
                             }
                         }
-                        if (giveupNode) {
-                            // 如果有要放弃的节点。 根节点始终是 main.
-                            giveupNode.parent.subNode = newNode;
-                            newNode.parent = giveupNode.parent;
-                            
-                        } else if(newNode) {
-                            newNode.parent = prevNode;
-                            prevNode.subNode = newNode;
-                        }
-                        if (newNode) {
-                            rootNode.runLoopType = newNode.runLoopType;
-                        }
                         // 计算giveup连上是否有超时。
-                        CallNode *overTimeNode = [giveupNode findSubNodeAtTime:lastTime + 1 overTimeInterval:checkTimeInterval];
+                        CallNode *overTimeNode = [giveupNode findSubNodeAtTime:lastTime + timeProfilerCheckInterval overTimeInterval:checkTimeInterval];
                         if (overTimeNode) {
                             // 如果找到了超时节点，要将父类的节点都设置上标记。
                             CallNode *parent = overTimeNode.parent;
@@ -310,9 +337,28 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
                             }
                             NSString *library = [overTimeNode.symbol libraryForDisplay];
                             int64_t absoluteTime = startTime + overTimeNode.startTime;
-                            TUFPrint(blockFP, @"%@|%@|%@|%@", @(absoluteTime), overTimeNode.label, library, @(time - overTimeNode.startTime));
+                            TUFPrint(blockFP, @"%@|%@|%@|%@|%@", overTimeNode.sampleTime, @(absoluteTime), overTimeNode.label, library, @(lastTime + timeProfilerCheckInterval - overTimeNode.startTime));
+                        }
+                        // 再尝试标记一下 根节点的耗时。
+                        CallNode *overTimeRootNode = [giveupNode.parent findRootNodeFromOverTimeNode:overTimeNode];
+                        if (overTimeRootNode) {
+                            NSString *library = [overTimeRootNode.symbol libraryForDisplay];
+                            int64_t absoluteTime = startTime + overTimeRootNode.startTime;
+                            TUFPrint(blockFP, @"%@|%@|%@|%@|%@", overTimeRootNode.sampleTime, @(absoluteTime), overTimeRootNode.label, library, @(lastTime + timeProfilerCheckInterval - overTimeRootNode.startTime));
                         }
                         
+                        if (giveupNode) {
+                            // 如果有要放弃的节点。 根节点始终是 main.
+                            giveupNode.parent.subNode = newNode;
+                            newNode.parent = giveupNode.parent;
+                        } else if(newNode) {
+                            // 只有一个新的节点，旧节点没有。
+                            newNode.parent = prevNode;
+                            prevNode.subNode = newNode;
+                        }
+                        if (newNode) {
+                            rootNode.runLoopType = newNode.runLoopType;
+                        }
                     }
                 }
                 lastTime = time;

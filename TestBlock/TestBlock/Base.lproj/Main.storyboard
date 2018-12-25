@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="14460.31" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="BYZ-38-t0r">
+    <device id="retina4_7" orientation="portrait">
+        <adaptation id="fullscreen"/>
+    </device>
+    <dependencies>
+        <deployment identifier="iOS"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="14460.20"/>
+        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <scenes>
+        <!--View Controller-->
+        <scene sceneID="tne-QT-ifu">
+            <objects>
+                <viewController id="BYZ-38-t0r" customClass="ViewController" sceneMemberID="viewController">
+                    <view key="view" contentMode="scaleToFill" id="8bC-Xf-vdC">
+                        <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <subviews>
+                            <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="roundedRect" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="3Rt-wy-QVZ">
+                                <rect key="frame" x="171" y="120" width="33" height="30"/>
+                                <state key="normal" title="Lock"/>
+                                <connections>
+                                    <action selector="testLock:" destination="BYZ-38-t0r" eventType="touchUpInside" id="wCj-ML-xJw"/>
+                                </connections>
+                            </button>
+                            <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="roundedRect" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="QaE-uQ-HJM">
+                                <rect key="frame" x="172.5" y="190" width="30" height="30"/>
+                                <state key="normal" title="File"/>
+                                <connections>
+                                    <action selector="testFile:" destination="BYZ-38-t0r" eventType="touchUpInside" id="fae-RM-sR1"/>
+                                </connections>
+                            </button>
+                            <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="roundedRect" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="ggk-Sl-g1v">
+                                <rect key="frame" x="143" y="330" width="89" height="30"/>
+                                <state key="normal" title="Observer Off"/>
+                                <connections>
+                                    <action selector="testObserver:" destination="BYZ-38-t0r" eventType="touchUpInside" id="KWZ-Fo-0J6"/>
+                                </connections>
+                            </button>
+                            <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="roundedRect" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="jsv-Yp-xcV">
+                                <rect key="frame" x="155" y="260" width="65" height="30"/>
+                                <state key="normal" title="Timer Off"/>
+                                <connections>
+                                    <action selector="testTimer:" destination="BYZ-38-t0r" eventType="touchUpInside" id="kig-m4-l3M"/>
+                                </connections>
+                            </button>
+                        </subviews>
+                        <color key="backgroundColor" red="1" green="1" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                        <constraints>
+                            <constraint firstItem="3Rt-wy-QVZ" firstAttribute="centerX" secondItem="6Tk-OE-BBY" secondAttribute="centerX" id="1eC-JL-NuH"/>
+                            <constraint firstItem="jsv-Yp-xcV" firstAttribute="top" secondItem="QaE-uQ-HJM" secondAttribute="bottom" constant="40" id="4BZ-Uf-uJv"/>
+                            <constraint firstItem="ggk-Sl-g1v" firstAttribute="top" secondItem="jsv-Yp-xcV" secondAttribute="bottom" constant="40" id="6S2-3R-qVY"/>
+                            <constraint firstItem="ggk-Sl-g1v" firstAttribute="centerX" secondItem="6Tk-OE-BBY" secondAttribute="centerX" id="BjD-W7-POm"/>
+                            <constraint firstItem="jsv-Yp-xcV" firstAttribute="centerX" secondItem="6Tk-OE-BBY" secondAttribute="centerX" id="Jd8-rJ-Yij"/>
+                            <constraint firstItem="QaE-uQ-HJM" firstAttribute="top" secondItem="3Rt-wy-QVZ" secondAttribute="bottom" constant="40" id="Kbc-eu-31e"/>
+                            <constraint firstItem="QaE-uQ-HJM" firstAttribute="centerX" secondItem="6Tk-OE-BBY" secondAttribute="centerX" id="MgD-0D-Zgx"/>
+                            <constraint firstItem="3Rt-wy-QVZ" firstAttribute="top" secondItem="6Tk-OE-BBY" secondAttribute="top" constant="100" id="lQU-Ey-HJ1"/>
+                        </constraints>
+                        <viewLayoutGuide key="safeArea" id="6Tk-OE-BBY"/>
+                    </view>
+                </viewController>
+                <placeholder placeholderIdentifier="IBFirstResponder" id="dkx-z0-nzr" sceneMemberID="firstResponder"/>
+            </objects>
+        </scene>
+    </scenes>
+</document>

@@ -433,6 +433,7 @@ struct XRBacktraceFragment {
 
 @interface XRAnalysisCoreTableViewController : NSViewController <XRFilteredDataSource, XRSearchTarget>
 - (DTRenderableContentResponse *)_currentResponse;
+- (DTRenderableContentResponse *)_lastResponse;
 - (id)_objectForStackDataElement:(id)arg1;
 @end
 

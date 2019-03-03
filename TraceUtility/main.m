@@ -48,11 +48,14 @@ static void __attribute__((constructor)) hook() {
 #pragma mark parse arguments
 static NSString *tracePath;
 static NSString *outputPath;
+static NSTimeInterval checkTimeInterval = 10;// 大于等于10认为发生卡顿。 默认为10.
 
 static void printUsage () {
     TUPrint(@"TraceUtil: 0.1 \n Usage: TraceUtil trace-document-path [options]\n  options are:");
     TUPrint(@"-o <dir> output directory , or just print in stdout without path setting");
+    TUPrint(@"-t <threshold> , count function which cost time more than the threshold time in main thread. Default is 10ms");
 }
+
 
 static BOOL parseArguments(NSArray<NSString *> *arguments) {
     if (arguments.count % 2 != 0) {
@@ -66,18 +69,32 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
         return NO;
     }
     if (arguments.count > 2) {
-        if ([arguments[2] isEqualToString:@"-o"]) {
-            outputPath = arguments[3];
-            if (![[NSFileManager defaultManager] fileExistsAtPath:outputPath]) {
-                NSError *error;
-                [[NSFileManager defaultManager] createDirectoryAtPath:outputPath withIntermediateDirectories:YES attributes:nil error:&error];
-                if (error) {
-                    TUPrint(@"error : %@", error);
+        for (NSInteger i = 2; i < arguments.count; i ++) {
+            NSString *param = arguments[i];
+            if ([param isEqualToString:@"-o"]) {
+                i++;
+                outputPath = arguments[i];
+                if (![[NSFileManager defaultManager] fileExistsAtPath:outputPath]) {
+                    NSError *error;
+                    [[NSFileManager defaultManager] createDirectoryAtPath:outputPath withIntermediateDirectories:YES attributes:nil error:&error];
+                    if (error) {
+                        TUPrint(@"error : %@", error);
+                        printUsage();
+                        return NO;
+                    }
+                }
+            } else if ([param isEqualToString:@"-t"]) {
+                i++;
+                NSInteger threshold = [arguments[i] integerValue];
+                if (threshold < 1 || threshold > 1000) {
+                    TUPrint(@"please input valid threshold");
                     printUsage();
                     return NO;
                 }
+                checkTimeInterval = threshold;
             }
         }
+      
     }
     return YES;
 }
@@ -265,7 +282,6 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
     TUFPrint(blockFP, @"sampleTime|time|symbol|library|cost");
     // 目前思路为 ： 以所有非系统库构建树， 去除掉main函数。 同时根据RunLoop状态，进行切换。
     __block CallNode *rootNode;
-    static NSTimeInterval checkTimeInterval = 17;// 大于等于17认为发生卡顿。
     // Instruments Time Profiler的原理是每隔一段时间检测一次CPU的状态，然后记录堆栈进行分析。 这个间隔默认为1毫秒。
     // TODO 验证 文件读写、锁 等阻塞操作下，检测是否正确。 验证定时器或者runloop监听器下，能否正确处理。
     static NSTimeInterval lastTime = -1000;

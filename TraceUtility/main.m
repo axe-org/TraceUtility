@@ -56,6 +56,37 @@ static void printUsage () {
     TUPrint(@"-t <threshold> , count function which cost time more than the threshold time in main thread. Default is 10ms");
 }
 
+static NSString *formatSampleTime(NSTimeInterval startTime) {
+    int64_t time = startTime * 1000;
+    int us = time % 1000;
+    int ms = (time / 1000) % 1000;
+    int second = (int)(time / 1000000);
+    return [NSString stringWithFormat:@"%02d:%02d.%03d.%03d", second / 60, second % 60, ms, us];
+}
+
+static int64_t decodeSampleTime(NSString *timeString) {
+    NSArray *items = [timeString componentsSeparatedByString:@"."];
+    int64_t sampleTime = [items[1] integerValue] * 1000 + [items[2] integerValue];
+    items = [items[0] componentsSeparatedByString:@":"];
+    sampleTime += ([items[0] integerValue] * 60 + [items[1] integerValue]) * 1000000;
+    return sampleTime;
+}
+
+static NSString *readLineAsNSString(FILE *file) {
+    char buffer[4096];
+    NSMutableString *result = [NSMutableString stringWithCapacity:256];
+    int charsRead;
+    do
+    {
+        if(fscanf(file, "%4095[^\n]%n%*c", buffer, &charsRead) == 1) {
+            [result appendFormat:@"%s", buffer];
+        } else {
+            break;
+        }
+    } while(charsRead == 4095);
+    return result;
+}
+
 
 static BOOL parseArguments(NSArray<NSString *> *arguments) {
     if (arguments.count % 2 != 0) {
@@ -148,7 +179,7 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
         }
         CallNode *current = [[CallNode alloc] init];
         current.startTime = startTime;
-        current.sampleTime = [CallNode formatSampleTime:startTime];
+        current.sampleTime = formatSampleTime(startTime);
         current.symbol = symbol;
         current.label = [symbol symbolNameForDisplay];
         current.parent = prev;
@@ -162,14 +193,6 @@ static BOOL parseArguments(NSArray<NSString *> *arguments) {
     }
     root.runLoopType = runLoopType;
     return root;
-}
-
-+ (NSString *)formatSampleTime: (NSTimeInterval)startTime {
-    int64_t time = startTime * 1000;
-    int us = time % 1000;
-    int ms = (time / 1000) % 1000;
-    int second = (int)(time / 1000000);
-    return [NSString stringWithFormat:@"%02d:%02d.%03d.%03d", second / 60, second % 60, ms, us];
 }
 
 // 找到层次最多的，超过耗时的子孙。
@@ -388,8 +411,8 @@ void exportTimeProfilerData(NSMutableArray<XRContext *> *contexts, XRInstrument 
 void exportFPSData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
     FILE *fp = NULL;
     if (outputPath) {
-        NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"fps.txt"];
-        fp = fopen(timeProfileFile.UTF8String, "w+");
+        NSString *fileName = [outputPath stringByAppendingPathComponent:@"fps.txt"];
+        fp = fopen(fileName.UTF8String, "w+");
     }
     XRContext *context = contexts[0];
     [context display];
@@ -421,8 +444,8 @@ void exportFPSData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
 void exportNetworkData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
     FILE *fp = NULL;
     if (outputPath) {
-        NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"network.txt"];
-        fp = fopen(timeProfileFile.UTF8String, "w+");
+        NSString *fileName = [outputPath stringByAppendingPathComponent:@"network.txt"];
+        fp = fopen(fileName.UTF8String, "w+");
     }
     XRContext *context = contexts[0];
     [context display];
@@ -477,8 +500,8 @@ void exportNetworkData(NSMutableArray<XRContext *> *contexts, int64_t startTime)
 void exportActivityData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
     FILE *fp = NULL;
     if (outputPath) {
-        NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"activity.txt"];
-        fp = fopen(timeProfileFile.UTF8String, "w+");
+        NSString *fileName = [outputPath stringByAppendingPathComponent:@"activity.txt"];
+        fp = fopen(fileName.UTF8String, "w+");
     }
     XRContext *context = contexts[0];
     [context display];
@@ -518,8 +541,8 @@ void exportLeaksData(XRLegacyInstrument *instrument, XRContext *context, int64_t
     // 可以通过断点，查找内存元素来快速发现数据路径。
     FILE *fp = NULL;
     if (outputPath) {
-        NSString *timeProfileFile = [outputPath stringByAppendingPathComponent:@"leaks.txt"];
-        fp = fopen(timeProfileFile.UTF8String, "w+");
+        NSString *fileName = [outputPath stringByAppendingPathComponent:@"leaks.txt"];
+        fp = fopen(fileName.UTF8String, "w+");
     }
     // 先从界面上找到 泄漏地址与  Responsibe Library 和 Responsibe Frame
     id view = [instrument viewForContext:context];
@@ -630,11 +653,142 @@ void exportAllocationData (XRObjectAllocInstrument *allocInstrument, XRObjectAll
     fclose(allocListFile);
 }
 
+void exportMetalVsyncData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
+    FILE *fp = NULL;
+    if (outputPath) {
+        NSString *fileName = [outputPath stringByAppendingPathComponent:@"dropFrame.txt"];
+        fp = fopen(fileName.UTF8String, "w+");
+    }
+    TUFPrint(fp, @"sampleTime|time|duration");
+    XRContext *context = contexts[0];
+    [context display];
+    XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
+    XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
+    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
+        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
+            while (XRAnalysisCoreReadCursorNext(cursor)) {
+                BOOL result = NO;
+                XRAnalysisCoreValue *object = nil;
+                // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
+                NSTimeInterval timestamp = [object.objectValue doubleValue] / 1000000;
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
+                float duration = [object.objectValue longLongValue] / 1000000.;
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 2, &object);
+                NSString *label = [object.objectValue stringValue];
+                if ([label isEqualToString:@"Display"] && duration > 17) {// 忽略17毫秒以内的正常帧
+                    TUFPrint(fp, @"%@|%@|%.3f", formatSampleTime(timestamp), @(startTime + (int64_t)timestamp), duration);
+                }
+            }
+        }];
+    }];
+    fclose(fp);
+}
+
+// TODO , 这里是 Metal的绘制耗时，是否能够准确代表一帧中的GPU绘制耗时，存在疑问。
+void exportMetalRenderTimeData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
+    FILE *fp = NULL;
+    if (outputPath) {
+        NSString *fileName = [outputPath stringByAppendingPathComponent:@"gpuRender.txt"];
+        fp = fopen(fileName.UTF8String, "w+");
+    }
+    TUFPrint(fp, @"sampleTime|time|duration");
+    XRContext *context = contexts[1];
+    [context display];
+    XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
+    XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
+    NSMutableDictionary *tmpMap = [[NSMutableDictionary alloc] init];
+    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
+        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
+            while (XRAnalysisCoreReadCursorNext(cursor)) {
+                BOOL result = NO;
+                XRAnalysisCoreValue *object = nil;
+                // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
+                NSTimeInterval timestamp = [object.objectValue doubleValue] / 1000000;
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
+                NSString *bufferID = [object.objectValue stringValue];
+                result = XRAnalysisCoreReadCursorGetValue(cursor, 3, &object);
+                NSString *event = [object.objectValue stringValue];
+                if ([event isEqualToString:@"Scheduled"]) {
+                    [tmpMap setObject:@(timestamp) forKey:bufferID];
+                } else {
+                    NSTimeInterval scheduledTime = [[tmpMap objectForKey:bufferID] doubleValue];
+                    [tmpMap removeObjectForKey:bufferID];
+                    NSTimeInterval duration = timestamp - scheduledTime;
+                    TUFPrint(fp, @"%@|%@|%.3f", formatSampleTime(scheduledTime), @(startTime + (int64_t)scheduledTime), duration);
+                }
+            }
+        }];
+    }];
+    fclose(fp);
+}
+
+// 结合 exportMetalVsyncData 和 exportMetalRenderTimeData 数据，去分析一下 掉帧时，GPU绘制耗时。
+void analyseMetalGPUData() {
+    NSString *frameFile = [outputPath stringByAppendingPathComponent:@"dropFrame.txt"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:frameFile]) {
+        return;
+    }
+    NSString *renderFile = [outputPath stringByAppendingPathComponent:@"gpuRender.txt"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:renderFile]) {
+        return;
+    }
+    
+    FILE *fp = NULL;
+    if (outputPath) {
+        NSString *fileName = [outputPath stringByAppendingPathComponent:@"metalResult.txt"];
+        fp = fopen(fileName.UTF8String, "w+");
+    } else {
+        return;
+    }
+    TUFPrint(fp, @"sampleTime|time|frameDuration|renderStartTime|renderDuration");
+    // 先读取掉帧数据。
+    NSMutableArray *dropFrameList = [NSMutableArray new];
+    FILE *file = fopen(frameFile.UTF8String, "r");
+    // 过滤第一行
+    readLineAsNSString(file);
+    while(!feof(file)) {
+        NSString *line = readLineAsNSString(file);
+        if (line.length > 1) {
+            NSArray *items = [line componentsSeparatedByString:@"|"];
+            int64_t sampleTime = decodeSampleTime(items[0]);
+            NSDictionary *frameInfo = @{
+                                        @"info": line,
+                                        @"startTime": @(sampleTime)
+                                        };
+            [dropFrameList addObject:frameInfo];
+        }
+    }
+    fclose(file);
+    // 然后再读取渲染数据
+    file = fopen(renderFile.UTF8String, "r");
+    // 过滤第一行
+    readLineAsNSString(file);
+    while(!feof(file) && dropFrameList.count) {
+        NSString *line = readLineAsNSString(file);
+        if (line.length > 1) {
+            NSArray *items = [line componentsSeparatedByString:@"|"];
+            int64_t sampleTime = decodeSampleTime(items[0]);
+            int64_t renderEndTime = sampleTime + [items[2] floatValue] * 1000;
+            // 判断是否在当前时间内。
+            NSDictionary *frameInfo = dropFrameList.firstObject;
+            int64_t dropFrameStartTime = [[frameInfo objectForKey:@"startTime"] longLongValue];
+            if (renderEndTime > dropFrameStartTime) {
+                // 这里渲染结束后，在vsync时就会刷新屏幕， 所以，当渲染结束时间大于帧开始时间，即可以认为这个渲染过程就是这个帧的GPU渲染部分。
+                [dropFrameList removeObjectAtIndex:0];
+                TUFPrint(fp, @"%@|%@|%@", frameInfo[@"info"], items[0], items[2]);
+            }
+        }
+    }
+    fclose(file);
+    fclose(fp);
+}
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-//        arguments = @[@"TraceUtil", @"/Users/luoxianming/Documents/Testing/traceTest/Leaks.trace", @"-o", @"/Users/luoxianming/Documents/Testing/traceTest/xxx"];
+//        arguments = @[@"TraceUtil", @"/Users/lxm/Documents/lxm/INTRESTING/3/performance/metal.trace", @"-o", @"/Users/lxm/Documents/lxm/INTRESTING/3/performance/xxx"];
         if (!parseArguments(arguments)) {
             return 1;
         }
@@ -713,6 +867,10 @@ int main(int argc, const char * argv[]) {
                 } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.homeleaks"]) {
                     XRContext *context = TUIvar(document, _restorationContext);
                     exportLeaksData((XRLegacyInstrument *)instrument, context, startTime);
+                } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.metal-application"]) {
+                    exportMetalRenderTimeData(contexts, startTime);
+                } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.vsync-event"]) {
+                    exportMetalVsyncData(contexts, startTime);
                 } else {
                     TUPrint(@"Data processor has not been implemented for this type of instrument.");
                 }
@@ -724,10 +882,11 @@ int main(int argc, const char * argv[]) {
                 }
             }
         }
-
         // Close the document safely.
         [document close];
         PFTClosePlugins();
+        // GPU渲染分析。
+        analyseMetalGPUData();
     }
     return 0;
 }

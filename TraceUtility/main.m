@@ -64,30 +64,6 @@ static NSString *formatSampleTime(NSTimeInterval startTime) {
     return [NSString stringWithFormat:@"%02d:%02d.%03d.%03d", second / 60, second % 60, ms, us];
 }
 
-static int64_t decodeSampleTime(NSString *timeString) {
-    NSArray *items = [timeString componentsSeparatedByString:@"."];
-    int64_t sampleTime = [items[1] integerValue] * 1000 + [items[2] integerValue];
-    items = [items[0] componentsSeparatedByString:@":"];
-    sampleTime += ([items[0] integerValue] * 60 + [items[1] integerValue]) * 1000000;
-    return sampleTime;
-}
-
-static NSString *readLineAsNSString(FILE *file) {
-    char buffer[4096];
-    NSMutableString *result = [NSMutableString stringWithCapacity:256];
-    int charsRead;
-    do
-    {
-        if(fscanf(file, "%4095[^\n]%n%*c", buffer, &charsRead) == 1) {
-            [result appendFormat:@"%s", buffer];
-        } else {
-            break;
-        }
-    } while(charsRead == 4095);
-    return result;
-}
-
-
 static BOOL parseArguments(NSArray<NSString *> *arguments) {
     if (arguments.count % 2 != 0) {
         printUsage();
@@ -653,142 +629,167 @@ void exportAllocationData (XRObjectAllocInstrument *allocInstrument, XRObjectAll
     fclose(allocListFile);
 }
 
-void exportMetalVsyncData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
-    FILE *fp = NULL;
-    if (outputPath) {
-        NSString *fileName = [outputPath stringByAppendingPathComponent:@"dropFrame.txt"];
-        fp = fopen(fileName.UTF8String, "w+");
-    }
-    TUFPrint(fp, @"sampleTime|time|duration");
-    XRContext *context = contexts[0];
-    [context display];
-    XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
-    XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
-    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
-        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
-            while (XRAnalysisCoreReadCursorNext(cursor)) {
-                BOOL result = NO;
-                XRAnalysisCoreValue *object = nil;
-                // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-                NSTimeInterval timestamp = [object.objectValue doubleValue] / 1000000;
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
-                float duration = [object.objectValue longLongValue] / 1000000.;
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 2, &object);
-                NSString *label = [object.objectValue stringValue];
-                if ([label isEqualToString:@"Display"] && duration > 17) {// 忽略17毫秒以内的正常帧
-                    TUFPrint(fp, @"%@|%@|%.3f", formatSampleTime(timestamp), @(startTime + (int64_t)timestamp), duration);
+// 遍历数据。
+void queryInstrumentsTable(XRAnalysisCore *analysisCore, NSString *tableName, void (^block)(NSArray *rowData)) {
+    unsigned long long columnCount = 0;
+    unsigned int tableID = 0;
+    for (unsigned int i = 0; i < 200; i++) {
+        XRAnalysisCoreTable *table = [analysisCore tableWithID:i];
+        if (table) {
+            XRAnalysisCoreTableSchema *schema = table.schema;
+            if (schema) {
+                NSString *name = TUIvar(schema, _name);
+                if ([name isEqualToString:tableName]) {
+                    columnCount = schema.columnCount;
+                    tableID = i;
+                    break;
                 }
             }
-        }];
-    }];
-    fclose(fp);
-}
-
-// TODO , 这里是 Metal的绘制耗时，是否能够准确代表一帧中的GPU绘制耗时，存在疑问。
-void exportMetalRenderTimeData(NSMutableArray<XRContext *> *contexts, int64_t startTime) {
-    FILE *fp = NULL;
-    if (outputPath) {
-        NSString *fileName = [outputPath stringByAppendingPathComponent:@"gpuRender.txt"];
-        fp = fopen(fileName.UTF8String, "w+");
+        }
     }
-    TUFPrint(fp, @"sampleTime|time|duration");
-    XRContext *context = contexts[1];
-    [context display];
-    XRAnalysisCoreTableViewController *controller = TUIvar(context.container, _tabularViewController);
-    XRAnalysisCorePivotArray *array = controller._currentResponse.content.rows;
-    NSMutableDictionary *tmpMap = [[NSMutableDictionary alloc] init];
-    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
-        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
-            while (XRAnalysisCoreReadCursorNext(cursor)) {
-                BOOL result = NO;
-                XRAnalysisCoreValue *object = nil;
-                // 注意这里取值， 并不是从界面中取值，而是从XRAnalysisCore 中。 所以访问的表为 schema ,index为schema中的列的序号，而不是instruments界面上展示的顺序.
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 0, &object);
-                NSTimeInterval timestamp = [object.objectValue doubleValue] / 1000000;
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 1, &object);
-                NSString *bufferID = [object.objectValue stringValue];
-                result = XRAnalysisCoreReadCursorGetValue(cursor, 3, &object);
-                NSString *event = [object.objectValue stringValue];
-                if ([event isEqualToString:@"Scheduled"]) {
-                    [tmpMap setObject:@(timestamp) forKey:bufferID];
-                } else {
-                    NSTimeInterval scheduledTime = [[tmpMap objectForKey:bufferID] doubleValue];
-                    [tmpMap removeObjectForKey:bufferID];
-                    NSTimeInterval duration = timestamp - scheduledTime;
-                    TUFPrint(fp, @"%@|%@|%.3f", formatSampleTime(scheduledTime), @(startTime + (int64_t)scheduledTime), duration);
-                }
-            }
-        }];
-    }];
-    fclose(fp);
-}
-
-// 结合 exportMetalVsyncData 和 exportMetalRenderTimeData 数据，去分析一下 掉帧时，GPU绘制耗时。
-void analyseMetalGPUData() {
-    NSString *frameFile = [outputPath stringByAppendingPathComponent:@"dropFrame.txt"];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:frameFile]) {
+    if (tableID == 0) {
+        NSLog(@"未找到指定的Table %@", tableName);
         return;
     }
-    NSString *renderFile = [outputPath stringByAppendingPathComponent:@"gpuRender.txt"];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:renderFile]) {
-        return;
-    }
+    XRAnalysisCorePivotArray *coreRowArray = [analysisCore selectRowsWithQuery:[XRAnalysisCoreTableQuery new] tableID:tableID];
+    XRAnalysisCorePivotArray *array = [[XRAnalysisCorePivotArray alloc] initWithRowArray:coreRowArray sortDescriptors:nil];
+    [array refresh];
     
+    [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
+        [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
+            while (XRAnalysisCoreReadCursorNext(cursor)) {
+                BOOL result = NO;
+                XRAnalysisCoreValue *object = nil;
+                NSMutableArray *rowData = [NSMutableArray new];
+                for (NSInteger i = 0; i < columnCount; i ++) {
+                    result = XRAnalysisCoreReadCursorGetValue(cursor, i, &object);
+                    if (result) {
+                        if (object.objectValue) {
+                            [rowData addObject:object.objectValue];
+                        } else {
+                            NSLog(@"读取数据失败 %@", object.objectValue);
+                        }
+                        
+                    } else {
+                        NSLog(@"读取数据失败！！！");
+                    }
+                }
+                block(rowData);
+            }
+        }];
+    }];
+}
+
+
+
+
+@interface OverTimeFrameInfo : NSObject
+// 以下时间，都以毫秒为单位。
+// 帧开始的时间。
+@property (nonatomic, assign) double frameStartTime;
+@property (nonatomic, assign) double frameDuration;
+// metal 的 cmdbuffer 计划 的开始和结束时间。
+@property (nonatomic, assign) double cmdbufferSchedulingTime;
+// GPU结束时间。
+@property (nonatomic, assign) double cmdbufferFinishedTime;
+// 类似 frame123 这样的字符串。
+@property (nonatomic, strong) NSString *frameName;
+
+@property (nonatomic, assign) double cpuStartTime;
+@property (nonatomic, assign) double cpuEndTime;
+
+
+@property (nonatomic, assign) double gpuStartTime;
+@property (nonatomic, assign) double gpuRenderDuration;
+@end
+
+@implementation OverTimeFrameInfo
+
+@end
+
+// GPU数据的分析，要三表联查 ：
+// metal-application-cmdbuffer-scheduling
+// graphics-compositor-intervals
+// displayed-surfaces-surface-interval
+// 结合 exportMetalVsyncData 和 exportMetalRenderTimeData 数据，去分析一下 掉帧时，GPU绘制耗时。
+void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
     FILE *fp = NULL;
-    if (outputPath) {
-        NSString *fileName = [outputPath stringByAppendingPathComponent:@"metalResult.txt"];
-        fp = fopen(fileName.UTF8String, "w+");
-    } else {
-        return;
-    }
-    TUFPrint(fp, @"sampleTime|time|frameDuration|renderStartTime|renderDuration");
-    // 先读取掉帧数据。
-    NSMutableArray *dropFrameList = [NSMutableArray new];
-    FILE *file = fopen(frameFile.UTF8String, "r");
-    // 过滤第一行
-    readLineAsNSString(file);
-    while(!feof(file)) {
-        NSString *line = readLineAsNSString(file);
-        if (line.length > 1) {
-            NSArray *items = [line componentsSeparatedByString:@"|"];
-            int64_t sampleTime = decodeSampleTime(items[0]);
-            NSDictionary *frameInfo = @{
-                                        @"info": line,
-                                        @"startTime": @(sampleTime)
-                                        };
-            [dropFrameList addObject:frameInfo];
+    NSString *fileName = [outputPath stringByAppendingPathComponent:@"metalResult.txt"];
+    fp = fopen(fileName.UTF8String, "w+");
+    TUFPrint(fp, @"frameStartTime|frameDuration|cpuStartTime|cpuDuration|gpuStartTime|gpuDuration");
+    // 先查 displayed-surfaces-surface-interval 表， 获取超时的帧的信息。
+    NSMutableArray *overTimeFrames = [NSMutableArray new];
+    queryInstrumentsTable(analysisCore, @"displayed-surfaces-surface-interval", ^(NSArray *rowData) {
+        double duration = [rowData[1] longLongValue] / 1000000.;
+        NSString *label = [rowData[2] stringValue];
+        // 这里可能有些帧耗时 17毫秒，但是依然认为是按时绘制完成。
+        if ([label isEqualToString:@"Display"] && duration > 20) {
+            OverTimeFrameInfo *frame = [OverTimeFrameInfo new];
+            frame.frameDuration = duration;
+            double startTime = [rowData[0] longLongValue] / 1000000.;
+            frame.frameStartTime = startTime;
+            [overTimeFrames addObject:frame];
         }
-    }
-    fclose(file);
-    // 然后再读取渲染数据
-    file = fopen(renderFile.UTF8String, "r");
-    // 过滤第一行
-    readLineAsNSString(file);
-    while(!feof(file) && dropFrameList.count) {
-        NSString *line = readLineAsNSString(file);
-        if (line.length > 1) {
-            NSArray *items = [line componentsSeparatedByString:@"|"];
-            int64_t sampleTime = decodeSampleTime(items[0]);
-            int64_t renderEndTime = sampleTime + [items[2] floatValue] * 1000;
-            // 判断是否在当前时间内。
-            NSDictionary *frameInfo = dropFrameList.firstObject;
-            int64_t dropFrameStartTime = [[frameInfo objectForKey:@"startTime"] longLongValue];
-            if (renderEndTime > dropFrameStartTime) {
-                // 这里渲染结束后，在vsync时就会刷新屏幕， 所以，当渲染结束时间大于帧开始时间，即可以认为这个渲染过程就是这个帧的GPU渲染部分。
-                [dropFrameList removeObjectAtIndex:0];
-                TUFPrint(fp, @"%@|%@|%@", frameInfo[@"info"], items[0], items[2]);
+    });
+    
+    // 再查 metal-application-cmdbuffer-scheduling 的结束时间。
+    NSMutableDictionary *frameMaps = [NSMutableDictionary new];
+    queryInstrumentsTable(analysisCore, @"metal-application-cmdbuffer-scheduling", ^(NSArray *rowData) {
+        // Scheduled 开始时间，可以视为下一帧CPU渲染开始的时间。
+        double time = [rowData[0] doubleValue] / 1000000;
+        NSString *eventName = [rowData[3] stringValue];
+        NSString *frameName = [rowData[4] stringValue];
+        if ([eventName isEqualToString:@"Scheduled"]) {
+            OverTimeFrameInfo *info = [OverTimeFrameInfo new];
+            info.cmdbufferSchedulingTime = time;
+            [frameMaps setObject:info forKey:frameName];
+        } else {
+            OverTimeFrameInfo *overTimeFrame = overTimeFrames.firstObject;
+            if (overTimeFrame) {
+                if (time > overTimeFrame.frameStartTime) {
+                    // 这里会把 overTimeFrames 清空。
+                    [overTimeFrames removeObjectAtIndex:0];
+                    OverTimeFrameInfo *info = [frameMaps objectForKey:frameName];
+                    info.cmdbufferSchedulingTime = info.cmdbufferSchedulingTime;
+                    info.cmdbufferFinishedTime = time;
+                    info.frameName = frameName;
+                } else {
+                    [frameMaps removeObjectForKey:frameName];
+                }
+            } else {
+                [frameMaps removeObjectForKey:frameName];
             }
         }
-    }
-    fclose(file);
+    });
+    
+    // 最后再查一下 graphics-compositor-intervals 拿到GPU开始时间。
+    __block double lastGPURenderStartTime = 0;
+    queryInstrumentsTable(analysisCore, @"graphics-compositor-intervals", ^(NSArray *rowData) {
+        NSString *frameName = [rowData[6] stringValue];
+        NSArray *list = rowData[7];
+        XRAnalysisCoreValue *coreValue = list.firstObject;
+        NSString *eventName = [coreValue.objectValue stringValue];
+        if ([eventName isEqualToString:@"Command Buffer 0"]) {
+            OverTimeFrameInfo *frameInfo = [frameMaps objectForKey:frameName];
+            if (frameInfo) {
+                double startTime = [rowData[0] longLongValue] / 1000000.;
+                frameInfo.cpuStartTime = lastGPURenderStartTime;
+                frameInfo.cpuEndTime = startTime;
+                frameInfo.gpuStartTime = startTime;
+                frameInfo.gpuRenderDuration = frameInfo.cmdbufferFinishedTime - startTime;
+                TUFPrint(fp, @"%@|%.3f|%@|%.3f|%@|%.3f", formatSampleTime(frameInfo.frameStartTime), frameInfo.frameDuration,
+                         formatSampleTime(frameInfo.cpuStartTime), frameInfo.cpuEndTime - frameInfo.cpuStartTime,
+                         formatSampleTime(frameInfo.gpuStartTime), frameInfo.gpuRenderDuration);
+            }
+        }
+    });
     fclose(fp);
 }
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-//        arguments = @[@"TraceUtil", @"/Users/lxm/Documents/lxm/INTRESTING/3/performance/metal.trace", @"-o", @"/Users/lxm/Documents/lxm/INTRESTING/3/performance/xxx"];
+        arguments = @[@"TraceUtil", @"/Users/luoxianming/Documents/Testing/traceTest/Metal/Instruments.trace", @"-o", @"/Users/luoxianming/Documents/Testing/traceTest/Metal"];
         if (!parseArguments(arguments)) {
             return 1;
         }
@@ -818,6 +819,11 @@ int main(int argc, const char * argv[]) {
 
         // Each trace document consists of data from several different instruments.
         XRTrace *trace = document.trace;
+
+        XRIntKeyedDictionary *_coresByRunNumber = TUIvar(trace, _coresByRunNumber);
+        NSArray *allObjects = [_coresByRunNumber allObjects];
+        XRAnalysisCore *analysisCore = allObjects.firstObject;
+        analyseMetalGPUData(analysisCore, outputPath);
         
         for (XRInstrument *instrument in trace.allInstrumentsList.allInstruments) {
 //            TUPrint(@"\nInstrument: %@ (%@)\n", instrument.type.name, instrument.type.uuid);
@@ -867,10 +873,6 @@ int main(int argc, const char * argv[]) {
                 } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.homeleaks"]) {
                     XRContext *context = TUIvar(document, _restorationContext);
                     exportLeaksData((XRLegacyInstrument *)instrument, context, startTime);
-                } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.metal-application"]) {
-                    exportMetalRenderTimeData(contexts, startTime);
-                } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.vsync-event"]) {
-                    exportMetalVsyncData(contexts, startTime);
                 } else {
                     TUPrint(@"Data processor has not been implemented for this type of instrument.");
                 }
@@ -885,8 +887,6 @@ int main(int argc, const char * argv[]) {
         // Close the document safely.
         [document close];
         PFTClosePlugins();
-        // GPU渲染分析。
-        analyseMetalGPUData();
     }
     return 0;
 }

@@ -60,7 +60,13 @@ typedef struct { XRTime start, length; } XRTimeRange;
 - (NSArray<XRInstrument *> *)allInstruments;
 @end
 
-@interface XRTrace : NSObject
+@interface XRIntKeyedDictionary : NSObject
+- (id)allObjects;
+@end
+
+@interface XRTrace : NSObject {
+    XRIntKeyedDictionary *_coresByRunNumber;
+}
 - (PFTInstrumentList *)allInstrumentsList;
 @end
 
@@ -421,6 +427,8 @@ struct XRBacktraceFragment {
 - (XRAnalysisCoreRowArray *)source;
 - (UInt64)count;
 - (void)access:(void (^)(XRAnalysisCorePivotArrayAccessor *accessor))block;
+- (id)initWithRowArray:(id)arg1 sortDescriptors:(id)arg2;
+- (void)refresh;
 @end
 
 @interface XRAnalysisCoreTableViewControllerResponse : NSObject
@@ -757,3 +765,54 @@ struct XRBacktraceFragment {
 //- (XRPowerStreamDefinition *)definitionForCurrentDetailView;
 //- (XRPowerTimeline *)selectedEventTimeline;
 //@end
+
+
+
+
+typedef void (^CDUnknownBlockType)(void);
+
+@interface XRAnalysisCoreQueryManager : NSObject
++ (BOOL)isTicketDestination:(id)arg1;
++ (id)queryPanelAccessTicketForCore:(id)arg1;
++ (int)_identifierForSignposting;
++ (BOOL)_establishesAffinity;
++ (BOOL)_enableConcurrentActivities;
+- (void)_escortMinorFrameAgentToExit:(id)arg1;
+- (void)_prepareMinorFrameAgent:(id)arg1;
+- (void)setupVisitWithQueryPanel:(id)arg1 agent:(id)arg2 mode:(id)arg3;
+- (id)changeSortDescriptors:(id)arg1 array:(id)arg2;
+- (id)refreshPivotArray:(id)arg1;
+- (id)refreshRowArray:(id)arg1;
+- (void)randomAccessForTableID:(unsigned int)arg1 block:(CDUnknownBlockType)arg2;
+- (void)query:(id)arg1 tableID:(unsigned int)arg2 handler:(id)arg3;
+- (id)asyncQuery:(id)arg1 tableID:(unsigned int)arg2 handler:(id)arg3;
+- (id)selectRowsWithQuery:(id)arg1 core:(id)arg2 tableID:(unsigned int)arg3 sortDescriptors:(id)arg4;
+- (id)selectRowsWithQuery:(id)arg1 core:(id)arg2 tableID:(unsigned int)arg3;
+
+@end
+
+@interface XRAnalysisCoreTableSchema : NSObject {
+    NSString *_name;
+}
+@property(readonly) unsigned long long columnCount;
+@end
+
+@interface XRAnalysisCoreTable : NSObject
+@property(readonly, nonatomic) XRAnalysisCoreTableSchema *schema;
+@end
+
+@interface XRAnalysisCoreBindingHemisphere : NSObject
+- (void)query:(id)arg1 tableID:(unsigned int)arg2 handler:(id)arg3 activity:(id)arg4;
+- (XRAnalysisCoreTable *)tableWithID:(unsigned int)arg1;
+- (id)requiredTableSpecForID:(unsigned int)arg1;
+- (void)removeObsoleteStores;
+- (void)removeRequiredTableWithID:(unsigned int)arg1;
+- (unsigned int)addRequiredTableWithSpec:(id)arg1;
+@end
+
+
+@interface XRAnalysisCore : NSObject
+- (XRAnalysisCorePivotArray *)selectRowsWithQuery:(id)arg1 tableID:(unsigned int)arg2;
+- (XRAnalysisCoreTable *)tableWithID:(unsigned int)arg1;
+@end
+

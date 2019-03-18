@@ -654,7 +654,8 @@ void queryInstrumentsTable(XRAnalysisCore *analysisCore, NSString *tableName, vo
     XRAnalysisCorePivotArray *coreRowArray = [analysisCore selectRowsWithQuery:[XRAnalysisCoreTableQuery new] tableID:tableID];
     XRAnalysisCorePivotArray *array = [[XRAnalysisCorePivotArray alloc] initWithRowArray:coreRowArray sortDescriptors:nil];
     [array refresh];
-    
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 3000 * NSEC_PER_MSEC));
     [array access:^(XRAnalysisCorePivotArrayAccessor *accessor) {
         [accessor readRowsStartingAt:0 dimension:0 block:^(XRAnalysisCoreReadCursor *cursor) {
             while (XRAnalysisCoreReadCursorNext(cursor)) {
@@ -733,7 +734,8 @@ void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
     });
     
     // 再查 metal-application-cmdbuffer-scheduling 的结束时间。
-    NSMutableDictionary *frameMaps = [NSMutableDictionary new];
+    NSMutableDictionary *frameTmpMaps = [NSMutableDictionary new];
+    NSMutableDictionary *overTimeFrameMaps = [NSMutableDictionary new];
     queryInstrumentsTable(analysisCore, @"metal-application-cmdbuffer-scheduling", ^(NSArray *rowData) {
         // Scheduled 开始时间，可以视为下一帧CPU渲染开始的时间。
         double time = [rowData[0] doubleValue] / 1000000;
@@ -742,23 +744,22 @@ void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
         if ([eventName isEqualToString:@"Scheduled"]) {
             OverTimeFrameInfo *info = [OverTimeFrameInfo new];
             info.cmdbufferSchedulingTime = time;
-            [frameMaps setObject:info forKey:frameName];
+            [frameTmpMaps setObject:info forKey:frameName];
         } else {
             OverTimeFrameInfo *overTimeFrame = overTimeFrames.firstObject;
             if (overTimeFrame) {
                 if (time > overTimeFrame.frameStartTime) {
                     // 这里会把 overTimeFrames 清空。
                     [overTimeFrames removeObjectAtIndex:0];
-                    OverTimeFrameInfo *info = [frameMaps objectForKey:frameName];
-                    info.cmdbufferSchedulingTime = info.cmdbufferSchedulingTime;
+                    OverTimeFrameInfo *info = [frameTmpMaps objectForKey:frameName];
                     info.cmdbufferFinishedTime = time;
                     info.frameName = frameName;
-                } else {
-                    [frameMaps removeObjectForKey:frameName];
+                    info.frameStartTime = overTimeFrame.frameStartTime;
+                    info.frameDuration = overTimeFrame.frameDuration;
+                    [overTimeFrameMaps setObject:info forKey:frameName];
                 }
-            } else {
-                [frameMaps removeObjectForKey:frameName];
             }
+            [frameTmpMaps removeObjectForKey:frameName];
         }
     });
     
@@ -770,13 +771,14 @@ void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
         XRAnalysisCoreValue *coreValue = list.firstObject;
         NSString *eventName = [coreValue.objectValue stringValue];
         if ([eventName isEqualToString:@"Command Buffer 0"]) {
-            OverTimeFrameInfo *frameInfo = [frameMaps objectForKey:frameName];
+            OverTimeFrameInfo *frameInfo = [overTimeFrameMaps objectForKey:frameName];
             if (frameInfo) {
                 double startTime = [rowData[0] longLongValue] / 1000000.;
                 frameInfo.cpuStartTime = lastGPURenderStartTime;
                 frameInfo.cpuEndTime = startTime;
                 frameInfo.gpuStartTime = startTime;
                 frameInfo.gpuRenderDuration = frameInfo.cmdbufferFinishedTime - startTime;
+                lastGPURenderStartTime  = startTime;
                 TUFPrint(fp, @"%@|%.3f|%@|%.3f|%@|%.3f", formatSampleTime(frameInfo.frameStartTime), frameInfo.frameDuration,
                          formatSampleTime(frameInfo.cpuStartTime), frameInfo.cpuEndTime - frameInfo.cpuStartTime,
                          formatSampleTime(frameInfo.gpuStartTime), frameInfo.gpuRenderDuration);
@@ -789,7 +791,7 @@ void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-        arguments = @[@"TraceUtil", @"/Users/luoxianming/Documents/Testing/traceTest/Metal/Instruments.trace", @"-o", @"/Users/luoxianming/Documents/Testing/traceTest/Metal"];
+//        arguments = @[@"TraceUtil", @"/Users/lxm/Documents/ele/INTRESTING/3/performance/metal.trace", @"-o", @"/Users/lxm/Documents/ele/INTRESTING/3/performance/"];
         if (!parseArguments(arguments)) {
             return 1;
         }

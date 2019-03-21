@@ -771,18 +771,18 @@ void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
         XRAnalysisCoreValue *coreValue = list.firstObject;
         NSString *eventName = [coreValue.objectValue stringValue];
         if ([eventName isEqualToString:@"Command Buffer 0"]) {
+            double startTime = [rowData[0] longLongValue] / 1000000.;
             OverTimeFrameInfo *frameInfo = [overTimeFrameMaps objectForKey:frameName];
             if (frameInfo) {
-                double startTime = [rowData[0] longLongValue] / 1000000.;
                 frameInfo.cpuStartTime = lastGPURenderStartTime;
                 frameInfo.cpuEndTime = startTime;
                 frameInfo.gpuStartTime = startTime;
                 frameInfo.gpuRenderDuration = frameInfo.cmdbufferFinishedTime - startTime;
-                lastGPURenderStartTime  = startTime;
                 TUFPrint(fp, @"%@|%.3f|%@|%.3f|%@|%.3f", formatSampleTime(frameInfo.frameStartTime), frameInfo.frameDuration,
                          formatSampleTime(frameInfo.cpuStartTime), frameInfo.cpuEndTime - frameInfo.cpuStartTime,
                          formatSampleTime(frameInfo.gpuStartTime), frameInfo.gpuRenderDuration);
             }
+            lastGPURenderStartTime  = startTime;
         }
     });
     fclose(fp);

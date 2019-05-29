@@ -43,6 +43,7 @@ typedef struct { XRTime start, length; } XRTimeRange;
 - (NSString *)uuid;
 - (NSString *)name;
 - (NSString *)category;
+- (NSString *)version;
 @end
 
 @protocol XRInstrumentViewController;
@@ -54,6 +55,7 @@ typedef struct { XRTime start, length; } XRTimeRange;
 - (NSArray<XRRun *> *)allRuns;
 - (XRRun *)currentRun;
 - (void)setCurrentRun:(XRRun *)run;
+- (NSString *)uuid;
 @end
 
 @interface PFTInstrumentList : NSObject

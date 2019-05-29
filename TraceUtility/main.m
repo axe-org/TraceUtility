@@ -702,6 +702,7 @@ void queryInstrumentsTable(XRAnalysisCore *analysisCore, NSString *tableName, vo
 
 @property (nonatomic, assign) double gpuStartTime;
 @property (nonatomic, assign) double gpuRenderDuration;
+@property (nonatomic, assign) double gpuEndTime;
 @end
 
 @implementation OverTimeFrameInfo
@@ -712,7 +713,6 @@ void queryInstrumentsTable(XRAnalysisCore *analysisCore, NSString *tableName, vo
 // metal-application-cmdbuffer-scheduling
 // graphics-compositor-intervals
 // displayed-surfaces-surface-interval
-// 结合 exportMetalVsyncData 和 exportMetalRenderTimeData 数据，去分析一下 掉帧时，GPU绘制耗时。
 void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
     FILE *fp = NULL;
     NSString *fileName = [outputPath stringByAppendingPathComponent:@"metalResult.txt"];
@@ -788,6 +788,71 @@ void analyseMetalGPUData(XRAnalysisCore *analysisCore, NSString *outputPath) {
     fclose(fp);
 }
 
+// GPU数据的分析，要三表联查 ：
+// metal-command-buffer-frame-assignment
+// metal-command-buffer-completed
+// narrative-heuristic-event-display
+void analyseMetalGPUDataV2(XRAnalysisCore *analysisCore, NSString *outputPath) {
+  FILE *fp = NULL;
+  NSString *fileName = [outputPath stringByAppendingPathComponent:@"metalResult.txt"];
+  fp = fopen(fileName.UTF8String, "w+");
+  TUFPrint(fp, @"frameStartTime|frameDuration|cpuStartTime|cpuDuration|gpuStartTime|gpuDuration");
+  // 先查 displayed-surfaces-surface-interval 表， 获取超时的帧的信息。
+  NSMutableArray *overTimeFrames = [NSMutableArray new];
+  queryInstrumentsTable(analysisCore, @"narrative-heuristic-event-display", ^(NSArray *rowData) {
+    double duration = [rowData[2] longLongValue] / 1000000.;
+    NSString *label = [rowData[3] stringValue];
+    // 这里可能有些帧耗时 17毫秒，但是依然认为是按时绘制完成。
+    if ([label isEqualToString:@"Display"] && duration > 20) {
+      OverTimeFrameInfo *frame = [OverTimeFrameInfo new];
+      frame.frameDuration = duration;
+      double startTime = [rowData[0] longLongValue] / 1000000.;
+      frame.frameStartTime = startTime;
+      [overTimeFrames addObject:frame];
+    }
+  });
+  
+  // 再查 metal-command-buffer-completed 的结束时间。
+  NSMutableDictionary *overTimeFrameMaps = [NSMutableDictionary new];
+  queryInstrumentsTable(analysisCore, @"metal-command-buffer-completed", ^(NSArray *rowData) {
+    // Scheduled 开始时间，可以视为下一帧CPU渲染开始的时间。
+    double time = [rowData[0] doubleValue] / 1000000;
+    NSString *frameName = [rowData[1] stringValue];
+    OverTimeFrameInfo *overTimeFrame = overTimeFrames.firstObject;
+    if (overTimeFrame) {
+      if (time > overTimeFrame.frameStartTime) {
+        // 这里会把 overTimeFrames 清空。
+        [overTimeFrames removeObjectAtIndex:0];
+        overTimeFrame.frameName = frameName;
+        overTimeFrame.gpuEndTime = time;
+        [overTimeFrameMaps setObject:overTimeFrame forKey:frameName];
+      }
+    }
+  });
+  
+  
+  // 最后再查一下 metal-command-buffer-frame-assignment 拿到GPU开始时间。
+  __block double lastGPURenderStartTime = 0;
+  queryInstrumentsTable(analysisCore, @"metal-command-buffer-frame-assignment", ^(NSArray *rowData) {
+    NSString *frameName = [rowData[1] stringValue];
+    double startTime = [rowData[0] doubleValue] / 1000000;
+    OverTimeFrameInfo *overTimeFrame = [overTimeFrameMaps objectForKey:frameName];
+    if (overTimeFrame) {
+      overTimeFrame.gpuStartTime = startTime;
+      overTimeFrame.gpuRenderDuration = overTimeFrame.gpuEndTime - startTime;
+      overTimeFrame.cpuStartTime = lastGPURenderStartTime;
+      overTimeFrame.cpuEndTime = startTime;
+      TUFPrint(fp, @"%@|%.3f|%@|%.3f|%@|%.3f", formatSampleTime(overTimeFrame.frameStartTime), overTimeFrame.frameDuration,
+               formatSampleTime(overTimeFrame.cpuStartTime), overTimeFrame.cpuEndTime - overTimeFrame.cpuStartTime,
+               formatSampleTime(overTimeFrame.gpuStartTime), overTimeFrame.gpuRenderDuration);
+    }
+    lastGPURenderStartTime  = startTime;
+  });
+  fclose(fp);
+}
+
+
+
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
@@ -825,7 +890,6 @@ int main(int argc, const char * argv[]) {
         XRIntKeyedDictionary *_coresByRunNumber = TUIvar(trace, _coresByRunNumber);
         NSArray *allObjects = [_coresByRunNumber allObjects];
         XRAnalysisCore *analysisCore = allObjects.firstObject;
-        analyseMetalGPUData(analysisCore, outputPath);
         
         for (XRInstrument *instrument in trace.allInstrumentsList.allInstruments) {
 //            TUPrint(@"\nInstrument: %@ (%@)\n", instrument.type.name, instrument.type.uuid);
@@ -861,7 +925,8 @@ int main(int argc, const char * argv[]) {
                 // Different instruments can have different data structure.
                 // Here are some straightforward example code demonstrating how to process the data from several commonly used instruments.
                 NSString *instrumentID = instrument.type.uuid;
-                TUPrint(@"instrumentID : %@", instrumentID);
+                NSString *version = instrument.type.version;
+                TUPrint(@"instrumentID : %@ @ %@", instrumentID, version);
                 if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.coresampler2"]) {
                     exportTimeProfilerData(contexts, instrument, startTime);
                 } else if ([instrumentID isEqualToString:@"org.axe.instruments.gpu"]) {
@@ -875,6 +940,14 @@ int main(int argc, const char * argv[]) {
                 } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.homeleaks"]) {
                     XRContext *context = TUIvar(document, _restorationContext);
                     exportLeaksData((XRLegacyInstrument *)instrument, context, startTime);
+                } else if ([instrumentID isEqualToString:@"com.apple.xray.instrument-type.metal-application"]) {
+                  NSString *typeUUID = instrument.uuid;
+                  if ([typeUUID isEqualToString:@"499C5A31-7310-47AE-8D05-DE5D273E9B63"]) {
+                    analyseMetalGPUData(analysisCore, outputPath);
+                  } else if ([typeUUID isEqualToString:@"0EBE0651-D77B-41A5-8B5C-803C0B0D1CE2"]) {
+                    // 新版
+                    analyseMetalGPUDataV2(analysisCore, outputPath);
+                  }
                 } else {
                     TUPrint(@"Data processor has not been implemented for this type of instrument.");
                 }
